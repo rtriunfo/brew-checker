@@ -16,6 +16,7 @@ the log pane on the right.
 
 import asyncio
 import importlib.util
+import json
 import pathlib
 import subprocess
 
@@ -56,6 +57,34 @@ def compute_state():
             missing.append((token, gone))
     untracked = sorted(core.present_apps() - owned)
     return sorted(missing), untracked, unknown
+
+
+def compute_upgrades(greedy=False):
+    """Return rows of (token, installed_version, latest_or_None, is_outdated).
+
+    Outdated casks come first. `latest` is only known for outdated ones (brew
+    can't compare versions for :latest / auto-updating casks). Blocking.
+    """
+    versions = {}
+    for line in core.run(["brew", "list", "--cask", "--versions"]).stdout.splitlines():
+        parts = line.split()
+        if parts:
+            versions[parts[0]] = " ".join(parts[1:]) or "—"
+
+    cmd = ["brew", "outdated", "--cask", "--json=v2"]
+    if greedy:
+        cmd.append("--greedy")
+    data = json.loads(core.run(cmd).stdout)
+    outdated = {c["name"]: c.get("current_version", "?") for c in data.get("casks", [])}
+
+    rows = []
+    for token in sorted(versions):
+        if token in outdated:
+            rows.append((token, versions[token], outdated[token], True))
+    for token in sorted(versions):
+        if token not in outdated:
+            rows.append((token, versions[token], None, False))
+    return rows
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -108,20 +137,29 @@ class BrewCheckerTUI(App):
     """
 
     BINDINGS = [
+        Binding("v", "switch_view", "View"),
         Binding("space", "toggle_select", "Select"),
         Binding("r", "reinstall", "Reinstall"),
         Binding("d", "drop", "Drop"),
         Binding("i", "install", "Install"),
         Binding("m", "toggle_missing", "±Missing"),
         Binding("u", "toggle_untracked", "±Untracked"),
+        Binding("U", "upgrade", "Upgrade"),
+        Binding("g", "toggle_greedy", "Greedy"),
         Binding("f5", "rescan", "Rescan"),
         Binding("q", "quit", "Quit"),
     ]
 
+    # actions that only make sense in one view (used to gate keys + footer)
+    _RECONCILE_ONLY = {"reinstall", "drop", "install", "toggle_missing", "toggle_untracked"}
+    _UPGRADES_ONLY = {"upgrade", "toggle_greedy"}
+
     def __init__(self):
         super().__init__()
         self.selected: set[str] = set()
-        self.show = {"m": True, "u": True}  # which groups are visible
+        self.view = "reconcile"             # "reconcile" | "upgrades"
+        self.show = {"m": True, "u": True}  # which reconcile groups are visible
+        self.greedy = False                 # include auto-updating casks in outdated
         self._missing: list = []
         self._untracked: list = []
         self._unknown: list = []
@@ -142,20 +180,43 @@ class BrewCheckerTUI(App):
         return self.query_one("#log", RichLog)
 
     async def on_mount(self) -> None:
-        self.table.add_column(" ", key="sel", width=3)
-        self.table.add_column("type", key="kind", width=10)
-        self.table.add_column("name", key="name", width=30)
-        self.table.add_column("detail", key="detail")
-        self.log_widget.write("[dim]space[/]=select  [dim]r[/]=reinstall  "
-                              "[dim]d[/]=drop  [dim]i[/]=install  "
+        self._configure_columns()
+        self.log_widget.write("[dim]v[/]=switch view  [dim]space[/]=select  "
                               "[dim]f5[/]=rescan  [dim]q[/]=quit")
         await self.refresh_state()
 
+    def check_action(self, action: str, parameters) -> bool | None:
+        """Hide view-specific bindings from the footer when they don't apply."""
+        if action in self._RECONCILE_ONLY and self.view != "reconcile":
+            return None
+        if action in self._UPGRADES_ONLY and self.view != "upgrades":
+            return None
+        return True
+
+    def _configure_columns(self) -> None:
+        self.table.clear(columns=True)
+        self.table.add_column(" ", key="sel", width=3)
+        if self.view == "reconcile":
+            self.table.add_column("type", key="kind", width=10)
+            self.table.add_column("name", key="name", width=30)
+            self.table.add_column("detail", key="detail")
+        else:
+            self.table.add_column("cask", key="cask", width=28)
+            self.table.add_column("installed", key="installed", width=22)
+            self.table.add_column("latest", key="latest", width=22)
+            self.table.add_column("status", key="status")
+
     async def refresh_state(self) -> None:
-        self.log_widget.write("[dim]scanning…[/]")
-        self._missing, self._untracked, self._unknown = await asyncio.to_thread(compute_state)
         self.selected.clear()
-        self._populate()
+        if self.view == "reconcile":
+            self.log_widget.write("[dim]scanning…[/]")
+            self._missing, self._untracked, self._unknown = \
+                await asyncio.to_thread(compute_state)
+            self._populate()
+        else:
+            self.log_widget.write("[dim]checking versions…[/]")
+            rows = await asyncio.to_thread(compute_upgrades, self.greedy)
+            self._populate_upgrades(rows)
 
     def _mark(self, key: str) -> str:
         return "[green]✔[/]" if key in self.selected else ""
@@ -184,6 +245,24 @@ class BrewCheckerTUI(App):
         self.log_widget.write(note)
         self.sub_title = note
 
+    def _populate_upgrades(self, rows) -> None:
+        self.table.clear()
+        outdated = 0
+        for token, installed, latest, is_outdated in rows:
+            key = f"c:{token}"
+            if is_outdated:
+                outdated += 1
+                self.table.add_row(self._mark(key), token, installed,
+                                   f"[green]{latest}[/]", "[yellow]outdated[/]", key=key)
+            else:
+                self.table.add_row(self._mark(key), token, installed,
+                                   "[dim]—[/]", "[dim]up to date[/]", key=key)
+        note = f"[b]{outdated}[/] upgradeable · {len(rows)} casks"
+        if self.greedy:
+            note += " [dim](greedy)[/]"
+        self.log_widget.write(note)
+        self.sub_title = note
+
     # --- selection ---------------------------------------------------------
     def _current_key(self) -> str | None:
         if self.table.row_count == 0:
@@ -206,6 +285,42 @@ class BrewCheckerTUI(App):
         return [k.split(":", 1)[1] for k in self.selected if k.startswith(prefix)]
 
     # --- actions -----------------------------------------------------------
+    def action_switch_view(self) -> None:
+        self.view = "upgrades" if self.view == "reconcile" else "reconcile"
+        self.selected.clear()
+        self.sub_title = "cask ⇄ Applications" if self.view == "reconcile" \
+            else "versions & upgrades"
+        self._configure_columns()
+        self.refresh_bindings()  # update the footer for the new view
+        self.run_worker(self.refresh_state(), exclusive=True)
+
+    def action_toggle_greedy(self) -> None:
+        if self.view != "upgrades":
+            return
+        self.greedy = not self.greedy
+        self.run_worker(self.refresh_state(), exclusive=True)
+
+    def action_upgrade(self) -> None:
+        self._run_upgrade()
+
+    @work(exclusive=True)
+    async def _run_upgrade(self) -> None:
+        tokens = self._selected("c:")
+        if not tokens:
+            self.notify("Select one or more casks to upgrade first (space).",
+                        severity="warning")
+            return
+        cmds = [["brew", "upgrade", "--cask", t] for t in tokens]
+        ok = await self.push_screen_wait(
+            ConfirmScreen([" ".join(c) for c in cmds], header="brew upgrade?"))
+        if not ok:
+            self.log_widget.write("[dim]cancelled[/]")
+            return
+        self.log_widget.write("[dim]running in terminal (handles sudo/password prompts)…[/]")
+        for cmd, rc in await self._run_in_terminal(cmds):
+            self._log_exit(cmd, rc)
+        await self.refresh_state()
+
     def action_reinstall(self) -> None:
         self._run_cask_action("m:", "reinstall")
 
