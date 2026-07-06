@@ -17,6 +17,7 @@ the log pane on the right.
 import asyncio
 import importlib.util
 import pathlib
+import subprocess
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -227,8 +228,9 @@ class BrewCheckerTUI(App):
         if not ok:
             self.log_widget.write("[dim]cancelled[/]")
             return
-        for cmd in cmds:
-            await self._stream(cmd)
+        self.log_widget.write("[dim]running in terminal (handles sudo/password prompts)…[/]")
+        for cmd, rc in await self._run_in_terminal(cmds):
+            self._log_exit(cmd, rc)
         await self.refresh_state()
 
     @work(exclusive=True)
@@ -238,6 +240,7 @@ class BrewCheckerTUI(App):
             self.notify("Select one or more UNTRACKED apps first (space).",
                         severity="warning")
             return
+        to_install: list[list[str]] = []
         for app in apps:
             term = (app[:-4] if app.endswith(".app") else app).strip().lower().replace(" ", "-")
             self.log_widget.write(f"[b]$ brew search --cask {term}[/]")
@@ -255,9 +258,13 @@ class BrewCheckerTUI(App):
                 [f"brew install --cask {top}"],
                 header=f"Install best match for {app}?"))
             if ok:
-                await self._stream(["brew", "install", "--cask", top])
+                to_install.append(["brew", "install", "--cask", top])
             else:
                 self.log_widget.write("[dim]skipped[/]")
+        if to_install:
+            self.log_widget.write("[dim]running installs in terminal…[/]")
+            for cmd, rc in await self._run_in_terminal(to_install):
+                self._log_exit(cmd, rc)
         await self.refresh_state()
 
     def _toggle_group(self, prefix: str) -> None:
@@ -277,19 +284,45 @@ class BrewCheckerTUI(App):
         self.run_worker(self.refresh_state(), exclusive=True)
 
     # --- command runner ----------------------------------------------------
-    async def _stream(self, cmd: list[str]) -> None:
-        self.log_widget.write(f"[b]$ {' '.join(cmd)}[/]")
-        try:
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=PIPE, stderr=STDOUT)
-        except FileNotFoundError:
-            self.log_widget.write("[red]brew not found on PATH[/]")
-            return
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            self.log_widget.write(raw.decode(errors="replace").rstrip())
-        rc = await proc.wait()
+    def _log_exit(self, cmd: list[str], rc: int) -> None:
         colour = "green" if rc == 0 else "red"
-        self.log_widget.write(f"[{colour}][exit {rc}][/]")
+        self.log_widget.write(f"[b]$ {' '.join(cmd)}[/] [{colour}][exit {rc}][/]")
+
+    def _run_batch_blocking(self, cmds: list[list[str]]) -> list[tuple[list[str], int]]:
+        """Run each command with the real terminal attached, so brew's sudo/password
+        prompts work. Blocking — runs off the event loop via asyncio.to_thread."""
+        results: list[tuple[list[str], int]] = []
+        for cmd in cmds:
+            print(f"\n\033[1m$ {' '.join(cmd)}\033[0m", flush=True)
+            try:
+                rc = subprocess.run(cmd).returncode  # inherits stdin/stdout/stderr
+            except FileNotFoundError:
+                print("brew not found on PATH", flush=True)
+                rc = 127
+            print(f"\033[2m[exit {rc}]\033[0m", flush=True)
+            results.append((cmd, rc))
+        try:
+            input("\n[finished — press Enter to return to brew-checker] ")
+        except EOFError:
+            pass
+        return results
+
+    async def _run_in_terminal(self, cmds: list[list[str]]) -> list[tuple[list[str], int]]:
+        """Suspend the TUI and run brew in the real terminal, then resume.
+
+        brew casks can invoke sudo (e.g. removing a launchctl helper), which reads
+        the password straight from the terminal. Piping stdout the way the scan
+        does would leave that prompt with nowhere to go and hang, so for anything
+        that changes state we give brew the actual terminal instead.
+        """
+        if not cmds:
+            return []
+        try:
+            with self.suspend():
+                return await asyncio.to_thread(self._run_batch_blocking, cmds)
+        except Exception as exc:  # e.g. SuspendNotSupported outside a real terminal
+            self.log_widget.write(f"[red]could not run in terminal: {exc}[/]")
+            return []
 
 
 def main() -> None:

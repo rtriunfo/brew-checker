@@ -109,6 +109,12 @@ python3 -m venv .venv
 | `f5`    | rescan                                                         |
 | `q`     | quit                                                           |
 
+When you run an action, the TUI **suspends itself and hands the terminal to
+brew**, then resumes when it's done (press Enter to return). This is deliberate:
+some casks run `sudo` mid-install (e.g. removing a launchctl helper) and prompt
+for your password — that prompt needs the real terminal, so brew's output for
+these commands appears in the terminal rather than the side log pane.
+
 The plain `brew-checker.py` remains fully standalone and dependency-free — the
 TUI is purely additive.
 
