@@ -104,6 +104,8 @@ python3 -m venv .venv
 | `r`     | reinstall selected MISSING casks (`brew reinstall --cask`)     |
 | `d`     | drop selected MISSING casks (`brew uninstall --cask`)          |
 | `i`     | search + install a cask for selected UNTRACKED apps           |
+| `m`     | show / hide the MISSING group                                 |
+| `u`     | show / hide the UNTRACKED group                                |
 | `f5`    | rescan                                                         |
 | `q`     | quit                                                           |
 

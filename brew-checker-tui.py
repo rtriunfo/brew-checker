@@ -111,6 +111,8 @@ class BrewCheckerTUI(App):
         Binding("r", "reinstall", "Reinstall"),
         Binding("d", "drop", "Drop"),
         Binding("i", "install", "Install"),
+        Binding("m", "toggle_missing", "±Missing"),
+        Binding("u", "toggle_untracked", "±Untracked"),
         Binding("f5", "rescan", "Rescan"),
         Binding("q", "quit", "Quit"),
     ]
@@ -118,6 +120,10 @@ class BrewCheckerTUI(App):
     def __init__(self):
         super().__init__()
         self.selected: set[str] = set()
+        self.show = {"m": True, "u": True}  # which groups are visible
+        self._missing: list = []
+        self._untracked: list = []
+        self._unknown: list = []
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -146,17 +152,34 @@ class BrewCheckerTUI(App):
 
     async def refresh_state(self) -> None:
         self.log_widget.write("[dim]scanning…[/]")
-        missing, untracked, unknown = await asyncio.to_thread(compute_state)
+        self._missing, self._untracked, self._unknown = await asyncio.to_thread(compute_state)
         self.selected.clear()
+        self._populate()
+
+    def _mark(self, key: str) -> str:
+        return "[green]✔[/]" if key in self.selected else ""
+
+    def _populate(self) -> None:
+        """(Re)draw the table from the cached scan, honouring the visibility flags."""
         self.table.clear()
-        for token, apps in missing:
-            self.table.add_row("", "[red]MISSING[/]", token,
-                               f"[dim]→ {', '.join(apps)}[/]", key=f"m:{token}")
-        for app in untracked:
-            self.table.add_row("", "[yellow]UNTRACKED[/]", app, "", key=f"u:{app}")
-        note = f"[b]{len(missing)}[/] missing · [b]{len(untracked)}[/] untracked"
-        if unknown:
-            note += f" · {len(unknown)} uninspectable"
+        if self.show["m"]:
+            for token, apps in self._missing:
+                key = f"m:{token}"
+                self.table.add_row(self._mark(key), "[red]MISSING[/]", token,
+                                   f"[dim]→ {', '.join(apps)}[/]", key=key)
+        if self.show["u"]:
+            for app in self._untracked:
+                key = f"u:{app}"
+                self.table.add_row(self._mark(key), "[yellow]UNTRACKED[/]", app, "", key=key)
+
+        def part(count: int, label: str, visible: bool) -> str:
+            hidden = "" if visible else " [dim](hidden)[/]"
+            return f"[b]{count}[/] {label}{hidden}"
+
+        note = f"{part(len(self._missing), 'missing', self.show['m'])} · " \
+               f"{part(len(self._untracked), 'untracked', self.show['u'])}"
+        if self._unknown:
+            note += f" · {len(self._unknown)} uninspectable"
         self.log_widget.write(note)
         self.sub_title = note
 
@@ -236,6 +259,19 @@ class BrewCheckerTUI(App):
             else:
                 self.log_widget.write("[dim]skipped[/]")
         await self.refresh_state()
+
+    def _toggle_group(self, prefix: str) -> None:
+        self.show[prefix] = not self.show[prefix]
+        if not self.show[prefix]:
+            # dropping now-hidden rows keeps actions from touching invisible items
+            self.selected = {k for k in self.selected if not k.startswith(f"{prefix}:")}
+        self._populate()
+
+    def action_toggle_missing(self) -> None:
+        self._toggle_group("m")
+
+    def action_toggle_untracked(self) -> None:
+        self._toggle_group("u")
 
     def action_rescan(self) -> None:
         self.run_worker(self.refresh_state(), exclusive=True)
