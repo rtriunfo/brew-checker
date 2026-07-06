@@ -110,6 +110,32 @@ python3 -m venv .venv
 The plain `brew-checker.py` remains fully standalone and dependency-free — the
 TUI is purely additive.
 
+### Single-file executable (no dependencies to manage)
+
+> **Why not Docker?** This tool has to run natively on macOS — it drives your
+> host's `brew` and modifies `/Applications`. A Docker container runs Linux and
+> is sandboxed away from both, so it can't run this. Instead we bundle the one
+> dependency (`textual`) into a single self-contained executable.
+
+[shiv](https://shiv.readthedocs.io/) packages `textual` and both scripts into one
+runnable file. The result needs only `python3` (already on any Mac with brew) —
+no venv, no `pip install`.
+
+```sh
+# one-time: install the build tool
+.venv/bin/pip install -r requirements-dev.txt
+
+# build (re-run whenever you change the code)
+./build-tui.sh                       # -> dist/brew-checker-tui
+
+# run it from anywhere
+dist/brew-checker-tui
+ln -sf "$PWD/dist/brew-checker-tui" ~/.local/bin/brew-checker-tui   # optional: on PATH
+```
+
+The `dist/` artifact is git-ignored (it's a rebuildable 2–3 MB bundle); commit the
+source and rebuild rather than checking the binary in.
+
 ## How it works
 
 1. Lists installed casks (`brew list --cask`).

@@ -256,5 +256,9 @@ class BrewCheckerTUI(App):
         self.log_widget.write(f"[{colour}][exit {rc}][/]")
 
 
-if __name__ == "__main__":
+def main() -> None:
     BrewCheckerTUI().run()
+
+
+if __name__ == "__main__":
+    main()

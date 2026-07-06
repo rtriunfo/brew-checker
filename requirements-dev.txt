@@ -1,0 +1,4 @@
+# Build-only tooling (not needed to run anything). Install into .venv:
+#   .venv/bin/pip install -r requirements-dev.txt
+# Then build the single-file executable:  ./build-tui.sh
+shiv>=1.0
