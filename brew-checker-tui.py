@@ -208,15 +208,19 @@ class BrewCheckerTUI(App):
 
     async def refresh_state(self) -> None:
         self.selected.clear()
-        if self.view == "reconcile":
-            self.log_widget.write("[dim]scanning…[/]")
-            self._missing, self._untracked, self._unknown = \
-                await asyncio.to_thread(compute_state)
-            self._populate()
-        else:
-            self.log_widget.write("[dim]checking versions…[/]")
-            rows = await asyncio.to_thread(compute_upgrades, self.greedy)
-            self._populate_upgrades(rows)
+        self.table.loading = True  # spinner overlay so the wait is visibly "working"
+        try:
+            if self.view == "reconcile":
+                self.log_widget.write("[dim]scanning…[/]")
+                self._missing, self._untracked, self._unknown = \
+                    await asyncio.to_thread(compute_state)
+                self._populate()
+            else:
+                self.log_widget.write("[dim]checking versions…[/]")
+                rows = await asyncio.to_thread(compute_upgrades, self.greedy)
+                self._populate_upgrades(rows)
+        finally:
+            self.table.loading = False
 
     def _mark(self, key: str) -> str:
         return "[green]✔[/]" if key in self.selected else ""
