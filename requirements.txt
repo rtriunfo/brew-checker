@@ -1,0 +1,3 @@
+# Dependency for the interactive TUI (brew-checker-tui.py) only.
+# The original brew-checker.py needs none of this — it's pure stdlib.
+textual>=0.60
