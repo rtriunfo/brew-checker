@@ -96,30 +96,34 @@ python3 -m venv .venv
 ./run-tui.sh            # launches the TUI using the venv, from anywhere
 ```
 
-The TUI has two views, switched with `v`:
+The TUI has three views, cycled with `v`:
 
 - **Reconcile** (default) — the MISSING / UNTRACKED lists described above.
-- **Versions & upgrades** — every installed cask with its installed version, which
-  ones are outdated (and the latest version), and upgrade actions. By default it
-  uses `brew outdated --cask` (the same set `brew upgrade` would touch); press `g`
-  for greedy mode, which also flags auto-updating casks. Note brew can't report a
-  "latest" for `:latest` / auto-updating casks, so those show as up to date.
+- **Cask versions & upgrades** — every installed cask with its installed version,
+  which ones are outdated (and the latest version), and upgrade actions. By
+  default it uses `brew outdated --cask` (the same set `brew upgrade` would
+  touch); press `g` for greedy mode, which also flags auto-updating casks. Note
+  brew can't report a "latest" for `:latest` / auto-updating casks, so those show
+  as up to date.
+- **Formula versions & upgrades** — the same view for installed formulae, backed
+  by `brew outdated --formula`. Select outdated formulae and press `U` to upgrade
+  them. (Greedy mode is cask-only, so it doesn't apply here.)
 
 ### Keys
 
 | key     | view      | action                                                    |
 |---------|-----------|-----------------------------------------------------------|
-| `v`     | both      | switch between Reconcile and Versions & upgrades          |
-| `space` | both      | select / deselect the current row                         |
-| `f5`    | both      | rescan the current view                                   |
-| `q`     | both      | quit                                                      |
+| `v`     | all       | cycle Reconcile → Cask upgrades → Formula upgrades         |
+| `space` | all       | select / deselect the current row                         |
+| `f5`    | all       | rescan the current view                                   |
+| `q`     | all       | quit                                                      |
 | `r`     | reconcile | reinstall selected MISSING casks (`brew reinstall --cask`) |
 | `d`     | reconcile | drop selected MISSING casks (`brew uninstall --cask`)      |
 | `i`     | reconcile | search + install a cask for selected UNTRACKED apps       |
 | `m`     | reconcile | show / hide the MISSING group                             |
 | `u`     | reconcile | show / hide the UNTRACKED group                           |
-| `U`     | upgrades  | upgrade selected casks (`brew upgrade --cask`)            |
-| `g`     | upgrades  | toggle greedy (include auto-updating casks)              |
+| `U`     | upgrades  | upgrade selected casks/formulae (`brew upgrade`)          |
+| `g`     | casks     | toggle greedy (include auto-updating casks)              |
 
 The footer only shows the keys relevant to the active view.
 

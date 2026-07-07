@@ -59,31 +59,35 @@ def compute_state():
     return sorted(missing), untracked, unknown
 
 
-def compute_upgrades(greedy=False):
-    """Return rows of (token, installed_version, latest_or_None, is_outdated).
+def compute_upgrades(kind="cask", greedy=False):
+    """Return rows of (name, installed_version, latest_or_None, is_outdated).
 
-    Outdated casks come first. `latest` is only known for outdated ones (brew
-    can't compare versions for :latest / auto-updating casks). Blocking.
+    `kind` is "cask" or "formula". Outdated packages come first. `latest` is only
+    known for outdated ones (for casks brew can't compare :latest / auto-updating
+    tokens, so those stay "up to date"). `greedy` only applies to casks. Blocking.
     """
+    flag = f"--{kind}"
+    json_key = "casks" if kind == "cask" else "formulae"
+
     versions = {}
-    for line in core.run(["brew", "list", "--cask", "--versions"]).stdout.splitlines():
+    for line in core.run(["brew", "list", flag, "--versions"]).stdout.splitlines():
         parts = line.split()
         if parts:
             versions[parts[0]] = " ".join(parts[1:]) or "—"
 
-    cmd = ["brew", "outdated", "--cask", "--json=v2"]
-    if greedy:
+    cmd = ["brew", "outdated", flag, "--json=v2"]
+    if greedy and kind == "cask":
         cmd.append("--greedy")
     data = json.loads(core.run(cmd).stdout)
-    outdated = {c["name"]: c.get("current_version", "?") for c in data.get("casks", [])}
+    outdated = {p["name"]: p.get("current_version", "?") for p in data.get(json_key, [])}
 
     rows = []
-    for token in sorted(versions):
-        if token in outdated:
-            rows.append((token, versions[token], outdated[token], True))
-    for token in sorted(versions):
-        if token not in outdated:
-            rows.append((token, versions[token], None, False))
+    for name in sorted(versions):
+        if name in outdated:
+            rows.append((name, versions[name], outdated[name], True))
+    for name in sorted(versions):
+        if name not in outdated:
+            rows.append((name, versions[name], None, False))
     return rows
 
 
@@ -150,14 +154,18 @@ class BrewCheckerTUI(App):
         Binding("q", "quit", "Quit"),
     ]
 
+    # the ordered set of views cycled through with `v`
+    _VIEWS = ["reconcile", "casks", "formulae"]
+    # views where package upgrades apply (as opposed to the reconcile view)
+    _UPGRADE_VIEWS = {"casks", "formulae"}
+
     # actions that only make sense in one view (used to gate keys + footer)
     _RECONCILE_ONLY = {"reinstall", "drop", "install", "toggle_missing", "toggle_untracked"}
-    _UPGRADES_ONLY = {"upgrade", "toggle_greedy"}
 
     def __init__(self):
         super().__init__()
         self.selected: set[str] = set()
-        self.view = "reconcile"             # "reconcile" | "upgrades"
+        self.view = "reconcile"             # one of _VIEWS
         self.show = {"m": True, "u": True}  # which reconcile groups are visible
         self.greedy = False                 # include auto-updating casks in outdated
         self._missing: list = []
@@ -189,8 +197,10 @@ class BrewCheckerTUI(App):
         """Hide view-specific bindings from the footer when they don't apply."""
         if action in self._RECONCILE_ONLY and self.view != "reconcile":
             return None
-        if action in self._UPGRADES_ONLY and self.view != "upgrades":
+        if action == "upgrade" and self.view not in self._UPGRADE_VIEWS:
             return None
+        if action == "toggle_greedy" and self.view != "casks":
+            return None  # greedy is a cask-only concept
         return True
 
     def _configure_columns(self) -> None:
@@ -201,7 +211,8 @@ class BrewCheckerTUI(App):
             self.table.add_column("name", key="name", width=30)
             self.table.add_column("detail", key="detail")
         else:
-            self.table.add_column("cask", key="cask", width=28)
+            self.table.add_column("cask" if self.view == "casks" else "formula",
+                                  key="name", width=28)
             self.table.add_column("installed", key="installed", width=22)
             self.table.add_column("latest", key="latest", width=22)
             self.table.add_column("status", key="status")
@@ -215,10 +226,14 @@ class BrewCheckerTUI(App):
                 self._missing, self._untracked, self._unknown = \
                     await asyncio.to_thread(compute_state)
                 self._populate()
-            else:
-                self.log_widget.write("[dim]checking versions…[/]")
-                rows = await asyncio.to_thread(compute_upgrades, self.greedy)
-                self._populate_upgrades(rows)
+            elif self.view == "casks":
+                self.log_widget.write("[dim]checking cask versions…[/]")
+                rows = await asyncio.to_thread(compute_upgrades, "cask", self.greedy)
+                self._populate_upgrades(rows, "c", "casks")
+            else:  # formulae
+                self.log_widget.write("[dim]checking formula versions…[/]")
+                rows = await asyncio.to_thread(compute_upgrades, "formula")
+                self._populate_upgrades(rows, "f", "formulae")
         finally:
             self.table.loading = False
 
@@ -249,20 +264,20 @@ class BrewCheckerTUI(App):
         self.log_widget.write(note)
         self.sub_title = note
 
-    def _populate_upgrades(self, rows) -> None:
+    def _populate_upgrades(self, rows, prefix, noun) -> None:
         self.table.clear()
         outdated = 0
-        for token, installed, latest, is_outdated in rows:
-            key = f"c:{token}"
+        for name, installed, latest, is_outdated in rows:
+            key = f"{prefix}:{name}"
             if is_outdated:
                 outdated += 1
-                self.table.add_row(self._mark(key), token, installed,
+                self.table.add_row(self._mark(key), name, installed,
                                    f"[green]{latest}[/]", "[yellow]outdated[/]", key=key)
             else:
-                self.table.add_row(self._mark(key), token, installed,
+                self.table.add_row(self._mark(key), name, installed,
                                    "[dim]—[/]", "[dim]up to date[/]", key=key)
-        note = f"[b]{outdated}[/] upgradeable · {len(rows)} casks"
-        if self.greedy:
+        note = f"[b]{outdated}[/] upgradeable · {len(rows)} {noun}"
+        if self.view == "casks" and self.greedy:
             note += " [dim](greedy)[/]"
         self.log_widget.write(note)
         self.sub_title = note
@@ -290,16 +305,19 @@ class BrewCheckerTUI(App):
 
     # --- actions -----------------------------------------------------------
     def action_switch_view(self) -> None:
-        self.view = "upgrades" if self.view == "reconcile" else "reconcile"
+        self.view = self._VIEWS[(self._VIEWS.index(self.view) + 1) % len(self._VIEWS)]
         self.selected.clear()
-        self.sub_title = "cask ⇄ Applications" if self.view == "reconcile" \
-            else "versions & upgrades"
+        self.sub_title = {
+            "reconcile": "cask ⇄ Applications",
+            "casks": "cask versions & upgrades",
+            "formulae": "formula versions & upgrades",
+        }[self.view]
         self._configure_columns()
         self.refresh_bindings()  # update the footer for the new view
         self.run_worker(self.refresh_state(), exclusive=True)
 
     def action_toggle_greedy(self) -> None:
-        if self.view != "upgrades":
+        if self.view != "casks":
             return
         self.greedy = not self.greedy
         self.run_worker(self.refresh_state(), exclusive=True)
@@ -309,12 +327,14 @@ class BrewCheckerTUI(App):
 
     @work(exclusive=True)
     async def _run_upgrade(self) -> None:
-        tokens = self._selected("c:")
-        if not tokens:
-            self.notify("Select one or more casks to upgrade first (space).",
+        prefix, flag, noun = ("c:", "--cask", "casks") if self.view == "casks" \
+            else ("f:", "--formula", "formulae")
+        names = self._selected(prefix)
+        if not names:
+            self.notify(f"Select one or more {noun} to upgrade first (space).",
                         severity="warning")
             return
-        cmds = [["brew", "upgrade", "--cask", t] for t in tokens]
+        cmds = [["brew", "upgrade", flag, n] for n in names]
         ok = await self.push_screen_wait(
             ConfirmScreen([" ".join(c) for c in cmds], header="brew upgrade?"))
         if not ok:
