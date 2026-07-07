@@ -21,7 +21,12 @@ Two files, deliberately split:
   basenames) → compared against `present_apps()` to produce MISSING/UNTRACKED.
   Progress logging goes to **stderr** (`log()`); the report goes to stdout;
   colours auto-strip when stdout isn't a TTY. Exit code 1 when anything is
-  missing, 0 when clean.
+  missing, 0 when clean. Also hosts the read-only **backup** engine
+  (`build_backup`/`write_backup`/`load_backup`/`diff_backup`, plus
+  `installed_formulae`/`installed_taps`) and the `--export`/`--diff` CLI actions.
+  Snapshots live in `BACKUP_DIR` (`~/.brew-checker/backups/`); `list_backups()`
+  (tolerant — skips foreign JSON) and `default_backup_path()` (timestamped name)
+  back the TUI picker.
 
 - **`brew-checker-tui.py`** — an interactive [Textual](https://textual.textualize.io/)
   app that *reuses* the engine. It imports `brew-checker.py` by path via
@@ -40,11 +45,23 @@ total. Dropped tokens are returned as "uninspectable" rather than vanishing.
 
 ### TUI structure
 
-- Three views cycled with `v` (`_VIEWS`): **Reconcile** (MISSING/UNTRACKED),
-  **Cask versions & upgrades**, and **Formula versions & upgrades**. Both upgrade
-  views share `compute_upgrades(kind, greedy)` (backed by `brew outdated
-  --cask/--formula`); greedy mode is cask-only. Row-key prefixes distinguish them
-  (`m:`/`u:` reconcile, `c:` casks, `f:` formulae).
+- Four views cycled with `v` (`_VIEWS`): **Reconcile** (MISSING/UNTRACKED),
+  **Cask versions & upgrades**, **Formula versions & upgrades**, and **Backup &
+  restore**. The two upgrade views share `compute_upgrades(kind, greedy)` (backed
+  by `brew outdated --cask/--formula`); greedy mode is cask-only. Row-key prefixes
+  distinguish rows (`m:`/`u:` reconcile, `c:` casks, `f:` formulae, `bf:`/`bc:`
+  backup-missing formula/cask).
+- **Backup view** renders a loaded backup's full inventory against the machine
+  (via the engine's `diff_backup` plus the backup's own item lists): one row per
+  item tagged INSTALLED (info-only), MISSING (selectable/installable, sorted
+  first), or EXTRA (info-only) — so a matching backup still shows its whole list
+  rather than a blank table. The backup is chosen with `l` (`action_load` →
+  `BackupPickerScreen`, an
+  `OptionList` modal over `core.list_backups()`); the picker auto-opens on
+  entering the view with nothing loaded, and a launch-arg path bypasses it. `U`
+  reuses `action_upgrade`, dispatching to `_run_restore` (taps missing taps, then
+  `brew install --formula/--cask` the selection); `e` (`action_export`) writes a
+  fresh timestamped snapshot into `BACKUP_DIR` and loads it.
 - Row keys are prefixed (e.g. `missing:`, `untracked:`) so `_selected(prefix)`
   can filter selections; `check_action` gates which key bindings show per view.
 - **State-changing brew commands run in a suspended terminal**, not in the log

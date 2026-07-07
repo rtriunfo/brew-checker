@@ -45,6 +45,35 @@ Progress messages print to **stderr**, so they stay visible on screen without
 polluting a redirected report. The exit code is `1` when anything is missing and
 `0` when clean — handy for automation.
 
+## Backup & restore
+
+Snapshot everything you've explicitly installed so it can be recreated on another
+Mac. The backup is a small JSON file listing your **taps**, **explicitly-installed
+formulae** (`brew leaves --installed-on-request` — dependencies are omitted since
+they come back automatically), and **casks**.
+
+```sh
+brew-checker --export > brew-backup.json   # write a backup (or: --export FILE)
+brew-checker --diff brew-backup.json       # what the backup has that this Mac lacks (and vice versa)
+```
+
+`--diff` prints two lists per category: **MISSING** (in the backup, not installed
+here — the restore candidates) and **EXTRA** (installed here, absent from the
+backup). Exit code is `1` when anything is missing, `0` when in sync.
+
+Exporting and diffing are read-only — the CLI never installs anything. To
+actually **install** the missing items, open the backup in the TUI's backup view
+(below), which lets you select and install them (adding any needed taps first).
+
+### The backup store
+
+The TUI keeps its snapshots in `~/.brew-checker/backups/` so they accumulate and
+can be browsed. In the backup view, press `e` to save a fresh timestamped
+snapshot there, and `l` to open a picker listing every saved backup (host, date,
+formula/cask counts) — choose one to load and diff. The picker opens
+automatically when you enter the backup view with nothing loaded. (A file passed
+on launch, `run-tui.sh <file>`, bypasses the store and loads that file directly.)
+
 ## Requirements
 
 - **Homebrew** — the tool inspects your actual installed casks.
@@ -93,10 +122,11 @@ python3 -m venv .venv
 ### Run
 
 ```sh
-./run-tui.sh            # launches the TUI using the venv, from anywhere
+./run-tui.sh                     # launches the TUI using the venv, from anywhere
+./run-tui.sh brew-backup.json    # …with a backup loaded in the backup view
 ```
 
-The TUI has three views, cycled with `v`:
+The TUI has four views, cycled with `v`:
 
 - **Reconcile** (default) — the MISSING / UNTRACKED lists described above.
 - **Cask versions & upgrades** — every installed cask with its installed version,
@@ -108,12 +138,22 @@ The TUI has three views, cycled with `v`:
 - **Formula versions & upgrades** — the same view for installed formulae, backed
   by `brew outdated --formula`. Select outdated formulae and press `U` to upgrade
   them. (Greedy mode is cask-only, so it doesn't apply here.)
+- **Backup & restore** — browse saved backups (see [The backup
+  store](#the-backup-store) above) and compare one against this machine. Press
+  `l` to pick a backup (the picker auto-opens if none is loaded), or pass a file
+  on launch. It lists the backup's **whole inventory**, one row per item, tagged
+  **INSTALLED** (in both — so a backup matching this Mac shows a full green list),
+  **MISSING** (in the backup, not installed here), or **EXTRA** (installed here,
+  not in the backup). MISSING rows sort to the top of each section and are
+  selectable — select them and press `U` to install (any taps the backup needs
+  are added first). Press `e` to save a fresh snapshot of this machine into the
+  store.
 
 ### Keys
 
 | key     | view      | action                                                    |
 |---------|-----------|-----------------------------------------------------------|
-| `v`     | all       | cycle Reconcile → Cask upgrades → Formula upgrades         |
+| `v`     | all       | cycle Reconcile → Cask → Formula → Backup                 |
 | `space` | all       | select / deselect the current row                         |
 | `f5`    | all       | rescan the current view                                   |
 | `q`     | all       | quit                                                      |
@@ -124,6 +164,9 @@ The TUI has three views, cycled with `v`:
 | `u`     | reconcile | show / hide the UNTRACKED group                           |
 | `U`     | upgrades  | upgrade selected casks/formulae (`brew upgrade`)          |
 | `g`     | casks     | toggle greedy (include auto-updating casks)              |
+| `U`     | backup    | install selected MISSING items (`brew install`, tapping first) |
+| `l`     | backup    | open the picker to load a saved backup                    |
+| `e`     | backup    | save a fresh snapshot of this machine into the store     |
 
 The footer only shows the keys relevant to the active view.
 

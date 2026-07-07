@@ -13,8 +13,10 @@ Read-only. Nothing is modified; it only reports.
 """
 
 import argparse
+import datetime
 import json
 import os
+import socket
 import subprocess
 import sys
 
@@ -41,6 +43,118 @@ def run(cmd, check=True):
 def installed_casks():
     out = run(["brew", "list", "--cask"]).stdout.split()
     return sorted(out)
+
+
+def installed_formulae():
+    """Explicitly-installed formulae only (leaves), excluding pulled-in deps."""
+    out = run(["brew", "leaves", "--installed-on-request"]).stdout.split()
+    return sorted(out)
+
+
+def installed_taps():
+    out = run(["brew", "tap"]).stdout.split()
+    return sorted(out)
+
+
+# --- backup / restore ------------------------------------------------------
+# A backup is a portable snapshot of what you explicitly installed, so it can be
+# recreated on another machine. It's plain data (JSON) — writing one doesn't
+# touch brew; only the TUI's restore actually installs anything.
+SCHEMA = 1
+
+# Where the TUI keeps its snapshots so they accumulate and can be browsed.
+BACKUP_DIR = os.path.expanduser("~/.brew-checker/backups")
+
+
+def default_backup_path():
+    """A timestamped path in the backup store (time in the name avoids clashes)."""
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+    return os.path.join(BACKUP_DIR, f"brew-backup-{socket.gethostname()}-{stamp}.json")
+
+
+def list_backups():
+    """Every readable backup in BACKUP_DIR, newest first.
+
+    Returns [(path, meta, n_formulae, n_casks), …]. Unreadable/foreign JSON files
+    are skipped (this is tolerant, unlike load_backup which hard-exits).
+    """
+    if not os.path.isdir(BACKUP_DIR):
+        return []
+    entries = []
+    for name in os.listdir(BACKUP_DIR):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(BACKUP_DIR, name)
+        try:
+            with open(path) as f:
+                obj = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(obj, dict) or "formulae" not in obj or "casks" not in obj:
+            continue
+        entries.append((path, obj.get("meta", {}),
+                        len(obj["formulae"]), len(obj["casks"])))
+    entries.sort(key=lambda e: os.path.getmtime(e[0]), reverse=True)
+    return entries
+
+
+def build_backup():
+    """Snapshot the current machine's explicit formulae, casks, and taps."""
+    return {
+        "schema": SCHEMA,
+        "meta": {
+            "host": socket.gethostname(),
+            "date": datetime.date.today().isoformat(),
+        },
+        "taps": installed_taps(),
+        "formulae": installed_formulae(),
+        "casks": installed_casks(),
+    }
+
+
+def write_backup(obj, path=None):
+    """Write a backup as JSON to `path`, or to stdout when path is None/'-'."""
+    text = json.dumps(obj, indent=2)
+    if path in (None, "-"):
+        print(text)
+    else:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text + "\n")
+
+
+def load_backup(path):
+    """Read and validate a backup file. Exits with a clear message on bad input."""
+    try:
+        with open(path) as f:
+            obj = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise SystemExit(f"cannot read backup {path}: {e}")
+    if not isinstance(obj, dict) or "formulae" not in obj or "casks" not in obj:
+        raise SystemExit(f"{path} doesn't look like a brew-checker backup "
+                         "(missing 'formulae'/'casks').")
+    return obj
+
+
+def diff_backup(backup):
+    """Compare a backup against what's installed now.
+
+    Returns {kind: (missing, extra)} for kind in taps/formulae/casks, where
+    `missing` = in the backup but not installed here (restore candidates) and
+    `extra` = installed here but absent from the backup.
+    """
+    current = {
+        "taps": set(installed_taps()),
+        "formulae": set(installed_formulae()),
+        "casks": set(installed_casks()),
+    }
+    result = {}
+    for kind, have in current.items():
+        want = set(backup.get(kind, []))
+        result[kind] = (sorted(want - have), sorted(have - want))
+    return result
 
 
 def _parse_apps(cask):
@@ -109,6 +223,11 @@ def parse_args():
                    help="show only casks whose .app is missing from disk")
     p.add_argument("-u", "--untracked", action="store_true",
                    help="show only apps on disk with no owning cask")
+    p.add_argument("--export", nargs="?", const="-", metavar="FILE",
+                   help="write a backup of installed formulae/casks/taps as JSON "
+                        "(to FILE, or stdout if omitted)")
+    p.add_argument("--diff", metavar="FILE",
+                   help="show what a backup FILE has that this machine doesn't (and vice versa)")
     args = p.parse_args()
     # Default (no flag) = show everything.
     if not (args.missing or args.untracked):
@@ -116,7 +235,44 @@ def parse_args():
     return args
 
 
+def report_diff(backup):
+    """Print the backup ⇄ machine diff. Returns True if anything is missing."""
+    meta = backup.get("meta", {})
+    tag = f"{meta.get('host', '?')} · {meta.get('date', '?')}"
+    print(f"{BOLD}Backup ⇄ this machine{RESET}  {DIM}(backup: {tag}){RESET}\n")
+    diff = diff_backup(backup)
+    any_missing = False
+    labels = {"taps": "taps", "formulae": "formulae", "casks": "casks"}
+    for kind in ("taps", "formulae", "casks"):
+        missing, extra = diff[kind]
+        any_missing = any_missing or bool(missing)
+        print(f"{BOLD}{RED}MISSING {labels[kind]} — in backup, not installed here "
+              f"({len(missing)}){RESET}")
+        for name in missing:
+            print(f"  {RED}✗{RESET} {name}")
+        print(f"{BOLD}{YELLOW}EXTRA {labels[kind]} — installed here, not in backup "
+              f"({len(extra)}){RESET}")
+        for name in extra:
+            print(f"  {YELLOW}?{RESET} {name}")
+        print()
+    if any_missing:
+        print(f"{DIM}Install the missing items from the TUI's backup view: "
+              f"run-tui.sh <backup.json>{RESET}")
+    return any_missing
+
+
 def main(args):
+    # Backup / diff modes short-circuit the reconcile report.
+    if args.export is not None:
+        log("Building backup…")
+        write_backup(build_backup(), args.export)
+        if args.export not in (None, "-"):
+            log(f"  wrote {args.export}")
+        sys.exit(0)
+    if args.diff is not None:
+        log("Diffing backup against this machine…")
+        sys.exit(1 if report_diff(load_backup(args.diff)) else 0)
+
     # "Focused" mode = user asked for exactly one section; drop the header/footers
     # so the output is just that list.
     focused = args.missing ^ args.untracked

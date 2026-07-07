@@ -19,6 +19,7 @@ import importlib.util
 import json
 import pathlib
 import subprocess
+import sys
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -26,7 +27,8 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Footer, Header, Label, RichLog
+from textual.widgets import Button, DataTable, Footer, Header, Label, OptionList, RichLog
+from textual.widgets.option_list import Option
 
 # --- reuse the read-only engine from the original script, without touching it ---
 _CORE_PATH = pathlib.Path(__file__).with_name("brew-checker.py")
@@ -91,6 +93,16 @@ def compute_upgrades(kind="cask", greedy=False):
     return rows
 
 
+def compute_backup_diff(path):
+    """Load a backup and diff it against this machine.
+
+    Returns (meta, backup, diff); the full backup is included so the view can show
+    every item's status, not just the differences. Blocking.
+    """
+    backup = core.load_backup(path)
+    return backup.get("meta", {}), backup, core.diff_backup(backup)
+
+
 class ConfirmScreen(ModalScreen[bool]):
     """Yes/No modal that lists the exact commands about to run."""
 
@@ -122,6 +134,35 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class BackupPickerScreen(ModalScreen[str | None]):
+    """Modal list of saved backups; dismisses with the chosen file's path (or None)."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, entries):
+        super().__init__()
+        self._entries = entries  # [(path, meta, n_formulae, n_casks), …]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("Load a backup", id="dialog-title")
+            options = []
+            for path, meta, nf, nc in self._entries:
+                host = meta.get("host", "?")
+                date = meta.get("date", "?")
+                options.append(Option(f"{host:<16} {date:<12} {nf}f {nc}c"))
+            yield OptionList(*options, id="picker")
+
+    def on_mount(self) -> None:
+        self.query_one("#picker", OptionList).focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(self._entries[event.option_index][0])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class BrewCheckerTUI(App):
     TITLE = "brew-checker"
     SUB_TITLE = "cask ⇄ Applications"
@@ -131,6 +172,7 @@ class BrewCheckerTUI(App):
     #table { width: 3fr; border: round $primary; }
     #log { width: 2fr; border: round $secondary; padding: 0 1; }
     ConfirmScreen { align: center middle; }
+    BackupPickerScreen { align: center middle; }
     #dialog {
         width: 70; height: auto; padding: 1 2;
         border: thick $warning; background: $surface;
@@ -138,6 +180,7 @@ class BrewCheckerTUI(App):
     #dialog-title { text-style: bold; margin-bottom: 1; }
     #dialog-buttons { height: auto; margin-top: 1; align-horizontal: center; }
     #dialog-buttons Button { margin: 0 2; }
+    #picker { height: auto; max-height: 20; }
     """
 
     BINDINGS = [
@@ -148,29 +191,33 @@ class BrewCheckerTUI(App):
         Binding("i", "install", "Install"),
         Binding("m", "toggle_missing", "±Missing"),
         Binding("u", "toggle_untracked", "±Untracked"),
-        Binding("U", "upgrade", "Upgrade"),
+        Binding("U", "upgrade", "Install/Upgrade"),
         Binding("g", "toggle_greedy", "Greedy"),
+        Binding("l", "load", "Load"),
+        Binding("e", "export", "Export"),
         Binding("f5", "rescan", "Rescan"),
         Binding("q", "quit", "Quit"),
     ]
 
     # the ordered set of views cycled through with `v`
-    _VIEWS = ["reconcile", "casks", "formulae"]
-    # views where package upgrades apply (as opposed to the reconcile view)
-    _UPGRADE_VIEWS = {"casks", "formulae"}
+    _VIEWS = ["reconcile", "casks", "formulae", "backup"]
+    # views where the `U` (apply) action installs/upgrades the selected rows
+    _UPGRADE_VIEWS = {"casks", "formulae", "backup"}
 
     # actions that only make sense in one view (used to gate keys + footer)
     _RECONCILE_ONLY = {"reinstall", "drop", "install", "toggle_missing", "toggle_untracked"}
 
-    def __init__(self):
+    def __init__(self, backup_path=None):
         super().__init__()
         self.selected: set[str] = set()
         self.view = "reconcile"             # one of _VIEWS
         self.show = {"m": True, "u": True}  # which reconcile groups are visible
         self.greedy = False                 # include auto-updating casks in outdated
+        self.backup_path = backup_path      # backup file for the restore view (or None)
         self._missing: list = []
         self._untracked: list = []
         self._unknown: list = []
+        self._backup_diff: dict | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -201,6 +248,8 @@ class BrewCheckerTUI(App):
             return None
         if action == "toggle_greedy" and self.view != "casks":
             return None  # greedy is a cask-only concept
+        if action in ("export", "load") and self.view != "backup":
+            return None  # backup store actions only belong in the backup view
         return True
 
     def _configure_columns(self) -> None:
@@ -210,6 +259,10 @@ class BrewCheckerTUI(App):
             self.table.add_column("type", key="kind", width=10)
             self.table.add_column("name", key="name", width=30)
             self.table.add_column("detail", key="detail")
+        elif self.view == "backup":
+            self.table.add_column("status", key="status", width=10)
+            self.table.add_column("kind", key="kind", width=10)
+            self.table.add_column("name", key="name")
         else:
             self.table.add_column("cask" if self.view == "casks" else "formula",
                                   key="name", width=28)
@@ -230,12 +283,40 @@ class BrewCheckerTUI(App):
                 self.log_widget.write("[dim]checking cask versions…[/]")
                 rows = await asyncio.to_thread(compute_upgrades, "cask", self.greedy)
                 self._populate_upgrades(rows, "c", "casks")
-            else:  # formulae
+            elif self.view == "formulae":
                 self.log_widget.write("[dim]checking formula versions…[/]")
                 rows = await asyncio.to_thread(compute_upgrades, "formula")
                 self._populate_upgrades(rows, "f", "formulae")
+            else:  # backup
+                await self._refresh_backup()
         finally:
             self.table.loading = False
+
+    async def _refresh_backup(self) -> None:
+        self.table.clear()
+        if not self.backup_path:
+            self._backup_diff = None
+            self.sub_title = "backup — none loaded"
+            saved = await asyncio.to_thread(core.list_backups)
+            if saved:
+                self.log_widget.write(f"[dim]{len(saved)} saved backup(s)[/] — "
+                                      "opening picker ([dim]l[/] to reopen, "
+                                      "[dim]e[/] to snapshot this machine).")
+                self.call_after_refresh(self.action_load)
+            else:
+                self.log_widget.write("[yellow]no saved backups[/] — press [b]e[/] "
+                                      f"to snapshot this machine into {core.BACKUP_DIR}.")
+            return
+        self.log_widget.write(f"[dim]loading backup {self.backup_path}…[/]")
+        try:
+            meta, backup, diff = await asyncio.to_thread(compute_backup_diff, self.backup_path)
+        except SystemExit as exc:  # load_backup raises this on bad/missing files
+            self._backup_diff = None
+            self.log_widget.write(f"[red]{exc}[/]")
+            self.sub_title = "backup — load failed"
+            return
+        self._backup_diff = diff
+        self._populate_backup(meta, backup, diff)
 
     def _mark(self, key: str) -> str:
         return "[green]✔[/]" if key in self.selected else ""
@@ -282,6 +363,42 @@ class BrewCheckerTUI(App):
         self.log_widget.write(note)
         self.sub_title = note
 
+    def _populate_backup(self, meta, backup, diff) -> None:
+        """Show the full backup inventory, one row per item, with its status:
+        MISSING (in backup, not here — selectable+installable), INSTALLED (in both,
+        info-only), or EXTRA (here, not in backup — info-only). Even a backup that
+        matches this machine shows its whole list, all marked INSTALLED."""
+        self.table.clear()
+        # key prefixes: formulae "bf:", casks "bc:" (taps shown but not selectable)
+        prefixes = {"formulae": "bf", "casks": "bc"}
+        n_installed = n_missing = n_extra = 0
+        for kind in ("taps", "formulae", "casks"):
+            missing, extra = diff[kind]
+            missing_set = set(missing)
+            singular = kind[:-1]
+            # MISSING first (the actionable rows), then INSTALLED, then EXTRA.
+            for name in missing:
+                n_missing += 1
+                if kind in prefixes:
+                    key = f"{prefixes[kind]}:{name}"
+                    self.table.add_row(self._mark(key), "[red]MISSING[/]",
+                                       singular, name, key=key)
+                else:  # taps: shown for context, auto-added on restore
+                    self.table.add_row("", "[red]MISSING[/]", "tap", f"[dim]{name}[/]")
+            for name in backup.get(kind, []):
+                if name in missing_set:
+                    continue
+                n_installed += 1
+                self.table.add_row("", "[green]INSTALLED[/]", singular, f"[dim]{name}[/]")
+            for name in extra:
+                n_extra += 1
+                self.table.add_row("", "[yellow]EXTRA[/]", singular, f"[dim]{name}[/]")
+        tag = f"{meta.get('host', '?')} · {meta.get('date', '?')}"
+        note = (f"[green]{n_installed} installed[/] · [red]{n_missing} to install[/] · "
+                f"[yellow]{n_extra} extra[/] · backup: [dim]{tag}[/]")
+        self.log_widget.write(note)
+        self.sub_title = f"backup — {tag}"
+
     # --- selection ---------------------------------------------------------
     def _current_key(self) -> str | None:
         if self.table.row_count == 0:
@@ -311,6 +428,7 @@ class BrewCheckerTUI(App):
             "reconcile": "cask ⇄ Applications",
             "casks": "cask versions & upgrades",
             "formulae": "formula versions & upgrades",
+            "backup": "backup & restore",
         }[self.view]
         self._configure_columns()
         self.refresh_bindings()  # update the footer for the new view
@@ -323,7 +441,12 @@ class BrewCheckerTUI(App):
         self.run_worker(self.refresh_state(), exclusive=True)
 
     def action_upgrade(self) -> None:
-        self._run_upgrade()
+        # `U` applies the current view's action: upgrade (casks/formulae) or
+        # install-from-backup (backup view).
+        if self.view == "backup":
+            self._run_restore()
+        else:
+            self._run_upgrade()
 
     @work(exclusive=True)
     async def _run_upgrade(self) -> None:
@@ -344,6 +467,60 @@ class BrewCheckerTUI(App):
         for cmd, rc in await self._run_in_terminal(cmds):
             self._log_exit(cmd, rc)
         await self.refresh_state()
+
+    @work(exclusive=True)
+    async def _run_restore(self) -> None:
+        formulae = self._selected("bf:")
+        casks = self._selected("bc:")
+        if not (formulae or casks):
+            self.notify("Select one or more MISSING items to install first (space).",
+                        severity="warning")
+            return
+        # Add any taps the backup needs but this machine lacks, before installing.
+        cmds = [["brew", "tap", t] for t in self._backup_diff["taps"][0]]
+        cmds += [["brew", "install", "--formula", n] for n in formulae]
+        cmds += [["brew", "install", "--cask", n] for n in casks]
+        ok = await self.push_screen_wait(
+            ConfirmScreen([" ".join(c) for c in cmds], header="install from backup?"))
+        if not ok:
+            self.log_widget.write("[dim]cancelled[/]")
+            return
+        self.log_widget.write("[dim]running in terminal (handles sudo/password prompts)…[/]")
+        for cmd, rc in await self._run_in_terminal(cmds):
+            self._log_exit(cmd, rc)
+        await self.refresh_state()
+
+    def action_load(self) -> None:
+        if self.view == "backup":
+            self._pick_backup()
+
+    @work(exclusive=True)
+    async def _pick_backup(self) -> None:
+        entries = await asyncio.to_thread(core.list_backups)
+        if not entries:
+            self.notify(f"No saved backups in {core.BACKUP_DIR} — press e to create one.",
+                        severity="warning")
+            return
+        path = await self.push_screen_wait(BackupPickerScreen(entries))
+        if path is None:
+            return  # cancelled
+        self.backup_path = path
+        await self.refresh_state()
+
+    def action_export(self) -> None:
+        if self.view != "backup":
+            return
+        # Always write a fresh timestamped snapshot into the store, so backups
+        # accumulate for the picker, then load it.
+        path = core.default_backup_path()
+        try:
+            core.write_backup(core.build_backup(), path)
+        except OSError as exc:
+            self.log_widget.write(f"[red]export failed: {exc}[/]")
+            return
+        self.backup_path = path
+        self.log_widget.write(f"[green]saved[/] this machine's state → [b]{path}[/]")
+        self.run_worker(self.refresh_state(), exclusive=True)
 
     def action_reinstall(self) -> None:
         self._run_cask_action("m:", "reinstall")
@@ -465,7 +642,9 @@ class BrewCheckerTUI(App):
 
 
 def main() -> None:
-    BrewCheckerTUI().run()
+    # Optional positional arg: a backup file to load in the backup/restore view.
+    backup_path = sys.argv[1] if len(sys.argv) > 1 else None
+    BrewCheckerTUI(backup_path).run()
 
 
 if __name__ == "__main__":
