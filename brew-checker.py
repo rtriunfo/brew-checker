@@ -75,8 +75,8 @@ def default_backup_path():
 def list_backups():
     """Every readable backup in BACKUP_DIR, newest first.
 
-    Returns [(path, meta, n_formulae, n_casks), …]. Unreadable/foreign JSON files
-    are skipped (this is tolerant, unlike load_backup which hard-exits).
+    Returns [(path, meta, n_formulae, n_casks, n_taps), …]. Unreadable/foreign
+    JSON files are skipped (this is tolerant, unlike load_backup which hard-exits).
     """
     if not os.path.isdir(BACKUP_DIR):
         return []
@@ -93,7 +93,8 @@ def list_backups():
         if not isinstance(obj, dict) or "formulae" not in obj or "casks" not in obj:
             continue
         entries.append((path, obj.get("meta", {}),
-                        len(obj["formulae"]), len(obj["casks"])))
+                        len(obj["formulae"]), len(obj["casks"]),
+                        len(obj.get("taps", []))))
     entries.sort(key=lambda e: os.path.getmtime(e[0]), reverse=True)
     return entries
 
@@ -104,7 +105,7 @@ def build_backup():
         "schema": SCHEMA,
         "meta": {
             "host": socket.gethostname(),
-            "date": datetime.date.today().isoformat(),
+            "date": datetime.datetime.now().isoformat(),
         },
         "taps": installed_taps(),
         "formulae": installed_formulae(),

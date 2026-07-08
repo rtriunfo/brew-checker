@@ -17,6 +17,7 @@ the log pane on the right.
 import asyncio
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -136,22 +137,42 @@ class ConfirmScreen(ModalScreen[bool]):
 
 
 class BackupPickerScreen(ModalScreen[str | None]):
-    """Modal list of saved backups; dismisses with the chosen file's path (or None)."""
+    """Modal list of saved backups; dismisses with the chosen file's path (or None).
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    Supports multi-select deletion: press space to toggle selection on one or more
+    backups, then 'd' to delete them (with confirmation). Press enter to load the
+    highlighted backup.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("space", "toggle_select", "Select"),
+        Binding("d", "delete", "Delete"),
+    ]
 
     def __init__(self, entries):
         super().__init__()
-        self._entries = entries  # [(path, meta, n_formulae, n_casks), …]
+        self._entries = entries  # [(path, meta, n_formulae, n_casks, n_taps), …]
+        self._selected: set[int] = set()
+
+    def _option_label(self, idx: int) -> str:
+        path, meta, nf, nc, nt = self._entries[idx]
+        host = meta.get("host", "?")
+        date = meta.get("date", "?")
+        total = nf + nc + nt
+        mark = "✔ " if idx in self._selected else "  "
+        return f"{mark}{host:<16} {date:<20} {nf}f {nc}c {nt}t ({total} total)"
+
+    def _refresh_picker(self) -> None:
+        picker = self.query_one("#picker", OptionList)
+        picker.clear_options()
+        for idx in range(len(self._entries)):
+            picker.add_option(Option(self._option_label(idx)))
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("Load a backup", id="dialog-title")
-            options = []
-            for path, meta, nf, nc in self._entries:
-                host = meta.get("host", "?")
-                date = meta.get("date", "?")
-                options.append(Option(f"{host:<16} {date:<12} {nf}f {nc}c"))
+            options = [Option(self._option_label(i)) for i in range(len(self._entries))]
             yield OptionList(*options, id="picker")
 
     def on_mount(self) -> None:
@@ -159,6 +180,48 @@ class BackupPickerScreen(ModalScreen[str | None]):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(self._entries[event.option_index][0])
+
+    def action_toggle_select(self) -> None:
+        picker = self.query_one("#picker", OptionList)
+        idx = picker.highlighted
+        if idx is None:
+            return
+        if idx in self._selected:
+            self._selected.remove(idx)
+        else:
+            self._selected.add(idx)
+        picker.replace_option_prompt_at_index(idx, self._option_label(idx))
+
+    def action_delete(self) -> None:
+        if not self._selected:
+            self.notify("Select one or more backups to delete first (space).",
+                        severity="warning")
+            return
+        # push_screen_wait requires a worker context (see _pick_backup), so the
+        # confirm-and-delete flow has to run inside one, not directly in the action.
+        self._delete_selected()
+
+    @work
+    async def _delete_selected(self) -> None:
+        filenames = [os.path.basename(self._entries[i][0]) for i in sorted(self._selected)]
+        ok = await self.app.push_screen_wait(ConfirmScreen(filenames, header="Delete these backups?"))
+        if not ok:
+            return
+        for idx in sorted(self._selected, reverse=True):
+            try:
+                os.remove(self._entries[idx][0])
+            except OSError as exc:
+                self.notify(f"Failed to delete {os.path.basename(self._entries[idx][0])}: {exc}",
+                            severity="error")
+                continue
+        # Remove deleted entries, keeping remaining ones in order
+        surviving = [e for i, e in enumerate(self._entries) if i not in self._selected]
+        self._entries = surviving
+        self._selected.clear()
+        if not self._entries:
+            self.dismiss(None)
+            return
+        self._refresh_picker()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -175,7 +238,7 @@ class BrewCheckerTUI(App):
     ConfirmScreen { align: center middle; }
     BackupPickerScreen { align: center middle; }
     #dialog {
-        width: 70; height: auto; padding: 1 2;
+        width: 80; height: auto; padding: 1 2;
         border: thick $warning; background: $surface;
     }
     #dialog-title { text-style: bold; margin-bottom: 1; }

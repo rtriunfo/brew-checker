@@ -67,7 +67,12 @@ total. Dropped tokens are returned as "uninspectable" rather than vanishing.
   rather than a blank table. The backup is chosen with `l` (`action_load` →
   `BackupPickerScreen`, an
   `OptionList` modal over `core.list_backups()`); the picker auto-opens on
-  entering the view with nothing loaded, and a launch-arg path bypasses it. `U`
+  entering the view with nothing loaded, and a launch-arg path bypasses it. In
+  the picker, `space` toggles multi-select and `d` deletes the selected
+  snapshots (confirmed via `ConfirmScreen`). Because `push_screen_wait` requires
+  a worker context, the delete action delegates to a `@work` method
+  (`_delete_selected`) rather than awaiting inline — same reason `_pick_backup`
+  is a worker. `U`
   reuses `action_upgrade`, dispatching to `_run_restore` (taps missing taps, then
   `brew install --formula/--cask` the selection); `e` (`action_export`) writes a
   fresh timestamped snapshot into `BACKUP_DIR` and loads it.

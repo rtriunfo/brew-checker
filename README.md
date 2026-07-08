@@ -70,9 +70,11 @@ actually **install** the missing items, open the backup in the TUI's backup view
 The TUI keeps its snapshots in `~/.brew-checker/backups/` so they accumulate and
 can be browsed. In the backup view, press `e` to save a fresh timestamped
 snapshot there, and `l` to open a picker listing every saved backup (host, date,
-formula/cask counts) — choose one to load and diff. The picker opens
-automatically when you enter the backup view with nothing loaded. (A file passed
-on launch, `run-tui.sh <file>`, bypasses the store and loads that file directly.)
+formula/cask/tap counts) — press enter to load and diff one. In the picker,
+`space` toggles a checkmark on one or more backups and `d` deletes the selected
+ones from the store (after a confirmation). The picker opens automatically when
+you enter the backup view with nothing loaded. (A file passed on launch,
+`run-tui.sh <file>`, bypasses the store and loads that file directly.)
 
 ## Requirements
 
