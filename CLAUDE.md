@@ -45,12 +45,21 @@ total. Dropped tokens are returned as "uninspectable" rather than vanishing.
 
 ### TUI structure
 
-- Four views cycled with `v` (`_VIEWS`): **Reconcile** (MISSING/UNTRACKED),
-  **Cask versions & upgrades**, **Formula versions & upgrades**, and **Backup &
-  restore**. The two upgrade views share `compute_upgrades(kind, greedy)` (backed
-  by `brew outdated --cask/--formula`); greedy mode is cask-only. Row-key prefixes
+- Four views switched with `1`–`4` or cycled with `v` (`_VIEWS`): **Reconcile**
+  (MISSING/UNTRACKED), **Cask versions & upgrades**, **Formula versions &
+  upgrades**, and **Backup & restore**. Direct navigation uses `action_goto_view`;
+  both paths funnel through `_switch_to_view`. The command palette (`ctrl+p`,
+  Textual's built-in) includes "Go to: …" entries via `get_system_commands`. The
+  two upgrade views share `compute_upgrades(kind, greedy)` (backed by `brew
+  outdated --cask/--formula`); greedy mode is cask-only. Row-key prefixes
   distinguish rows (`m:`/`u:` reconcile, `c:` casks, `f:` formulae, `bf:`/`bc:`
   backup-missing formula/cask).
+- **Live filter** (`/` binding): an `Input` widget (id=`search`) docks at the
+  bottom, hidden by default. Typing filters the `DataTable` in real-time via
+  `_render_table`, which reads `_all_rows` (built by each `_populate*` method)
+  and skips rows whose `searchable_text` doesn't contain the query
+  (case-insensitive). `Enter` hides the bar but keeps the filter; `Esc` clears
+  and hides it. Switching views clears the filter.
 - **Backup view** renders a loaded backup's full inventory against the machine
   (via the engine's `diff_backup` plus the backup's own item lists): one row per
   item tagged INSTALLED (info-only), MISSING (selectable/installable, sorted

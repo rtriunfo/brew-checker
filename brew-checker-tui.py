@@ -22,12 +22,13 @@ import subprocess
 import sys
 
 from textual import work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
+from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Footer, Header, Label, OptionList, RichLog
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label, OptionList, RichLog
 from textual.widgets.option_list import Option
 
 # --- reuse the read-only engine from the original script, without touching it ---
@@ -181,10 +182,16 @@ class BrewCheckerTUI(App):
     #dialog-buttons { height: auto; margin-top: 1; align-horizontal: center; }
     #dialog-buttons Button { margin: 0 2; }
     #picker { height: auto; max-height: 20; }
+    #search { display: none; dock: bottom; height: 1; }
     """
 
     BINDINGS = [
         Binding("v", "switch_view", "View"),
+        Binding("1", "goto_casks", "Casks"),
+        Binding("2", "goto_formulae", "Formulae"),
+        Binding("3", "goto_reconcile", "Reconcile"),
+        Binding("4", "goto_backup", "Backup"),
+        Binding("slash", "search", "Search"),
         Binding("space", "toggle_select", "Select"),
         Binding("r", "reinstall", "Reinstall"),
         Binding("d", "drop", "Drop"),
@@ -199,8 +206,10 @@ class BrewCheckerTUI(App):
         Binding("q", "quit", "Quit"),
     ]
 
+    COMMAND_PALETTE_DISPLAY = "^p"
+
     # the ordered set of views cycled through with `v`
-    _VIEWS = ["reconcile", "casks", "formulae", "backup"]
+    _VIEWS = ["casks", "formulae", "reconcile", "backup"]
     # views where the `U` (apply) action installs/upgrades the selected rows
     _UPGRADE_VIEWS = {"casks", "formulae", "backup"}
 
@@ -210,7 +219,7 @@ class BrewCheckerTUI(App):
     def __init__(self, backup_path=None):
         super().__init__()
         self.selected: set[str] = set()
-        self.view = "reconcile"             # one of _VIEWS
+        self.view = "casks"                # one of _VIEWS
         self.show = {"m": True, "u": True}  # which reconcile groups are visible
         self.greedy = False                 # include auto-updating casks in outdated
         self.backup_path = backup_path      # backup file for the restore view (or None)
@@ -218,12 +227,16 @@ class BrewCheckerTUI(App):
         self._untracked: list = []
         self._unknown: list = []
         self._backup_diff: dict | None = None
+        self._all_rows: list[tuple[str | None, tuple[str, ...], str]] = []
+        self._filter_query: str = ""
+        self._filter_active: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="main"):
             yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
             yield RichLog(id="log", wrap=True, markup=True, highlight=True)
+        yield Input(id="search", placeholder="filter rows…")
         yield Footer()
 
     @property
@@ -236,8 +249,8 @@ class BrewCheckerTUI(App):
 
     async def on_mount(self) -> None:
         self._configure_columns()
-        self.log_widget.write("[dim]v[/]=switch view  [dim]space[/]=select  "
-                              "[dim]f5[/]=rescan  [dim]q[/]=quit")
+        self.log_widget.write("[dim]1[/]=casks  [dim]2[/]=formulae  [dim]3[/]=reconcile  [dim]4[/]=backup  "
+                              "[dim]v[/]=cycle  [dim]/[/]=filter  [dim]space[/]=select  [dim]f5[/]=rescan  [dim]^p[/]=palette  [dim]q[/]=quit")
         await self.refresh_state()
 
     def check_action(self, action: str, parameters) -> bool | None:
@@ -251,6 +264,20 @@ class BrewCheckerTUI(App):
         if action in ("export", "load") and self.view != "backup":
             return None  # backup store actions only belong in the backup view
         return True
+
+    def get_system_commands(self, screen) -> list[SystemCommand]:
+        yield from super().get_system_commands(screen)
+        for view, label in [
+            ("casks", "Casks"),
+            ("formulae", "Formulae"),
+            ("reconcile", "Reconcile"),
+            ("backup", "Backup"),
+        ]:
+            yield SystemCommand(
+                f"Go to: {label}",
+                f"Switch to the {label} view",
+                lambda v=view: self.action_goto_view(v),
+            )
 
     def _configure_columns(self) -> None:
         self.table.clear(columns=True)
@@ -321,18 +348,25 @@ class BrewCheckerTUI(App):
     def _mark(self, key: str) -> str:
         return "[green]✔[/]" if key in self.selected else ""
 
+    @staticmethod
+    def _strip_markup(text: str) -> str:
+        import re
+        return re.sub(r"\[/?[a-zA-Z_ ]*\]", "", text)
+
     def _populate(self) -> None:
-        """(Re)draw the table from the cached scan, honouring the visibility flags."""
-        self.table.clear()
+        """Build row data from the cached scan, honouring the visibility flags."""
+        self._all_rows = []
         if self.show["m"]:
             for token, apps in self._missing:
                 key = f"m:{token}"
-                self.table.add_row(self._mark(key), "[red]MISSING[/]", token,
-                                   f"[dim]→ {', '.join(apps)}[/]", key=key)
+                detail = f"[dim]→ {', '.join(apps)}[/]"
+                self._all_rows.append((key, (self._mark(key), "[red]MISSING[/]", token, detail),
+                                       f"{token} {' '.join(apps)} missing"))
         if self.show["u"]:
             for app in self._untracked:
                 key = f"u:{app}"
-                self.table.add_row(self._mark(key), "[yellow]UNTRACKED[/]", app, "", key=key)
+                self._all_rows.append((key, (self._mark(key), "[yellow]UNTRACKED[/]", app, ""),
+                                       f"{app} untracked"))
 
         def part(count: int, label: str, visible: bool) -> str:
             hidden = "" if visible else " [dim](hidden)[/]"
@@ -343,32 +377,36 @@ class BrewCheckerTUI(App):
         if self._unknown:
             note += f" · {len(self._unknown)} uninspectable"
         self.log_widget.write(note)
-        self.sub_title = note
+        self.sub_title = self._strip_markup(note)
+        self._render_table()
 
     def _populate_upgrades(self, rows, prefix, noun) -> None:
-        self.table.clear()
+        self._all_rows = []
         outdated = 0
         for name, installed, latest, is_outdated in rows:
             key = f"{prefix}:{name}"
             if is_outdated:
                 outdated += 1
-                self.table.add_row(self._mark(key), name, installed,
-                                   f"[green]{latest}[/]", "[yellow]outdated[/]", key=key)
+                self._all_rows.append((key, (self._mark(key), name, installed,
+                                   f"[green]{latest}[/]", "[yellow]outdated[/]"),
+                                   f"{name} {installed} {latest} outdated"))
             else:
-                self.table.add_row(self._mark(key), name, installed,
-                                   "[dim]—[/]", "[dim]up to date[/]", key=key)
+                self._all_rows.append((key, (self._mark(key), name, installed,
+                                   "[dim]—[/]", "[dim]up to date[/]"),
+                                   f"{name} {installed} up to date"))
         note = f"[b]{outdated}[/] upgradeable · {len(rows)} {noun}"
         if self.view == "casks" and self.greedy:
             note += " [dim](greedy)[/]"
         self.log_widget.write(note)
-        self.sub_title = note
+        self.sub_title = self._strip_markup(note)
+        self._render_table()
 
     def _populate_backup(self, meta, backup, diff) -> None:
         """Show the full backup inventory, one row per item, with its status:
         MISSING (in backup, not here — selectable+installable), INSTALLED (in both,
         info-only), or EXTRA (here, not in backup — info-only). Even a backup that
         matches this machine shows its whole list, all marked INSTALLED."""
-        self.table.clear()
+        self._all_rows = []
         # key prefixes: formulae "bf:", casks "bc:" (taps shown but not selectable)
         prefixes = {"formulae": "bf", "casks": "bc"}
         n_installed = n_missing = n_extra = 0
@@ -381,23 +419,40 @@ class BrewCheckerTUI(App):
                 n_missing += 1
                 if kind in prefixes:
                     key = f"{prefixes[kind]}:{name}"
-                    self.table.add_row(self._mark(key), "[red]MISSING[/]",
-                                       singular, name, key=key)
+                    self._all_rows.append((key, (self._mark(key), "[red]MISSING[/]",
+                                       singular, name), f"{name} {singular} missing"))
                 else:  # taps: shown for context, auto-added on restore
-                    self.table.add_row("", "[red]MISSING[/]", "tap", f"[dim]{name}[/]")
+                    self._all_rows.append((None, ("", "[red]MISSING[/]", "tap", f"[dim]{name}[/]"),
+                                           f"{name} tap missing"))
             for name in backup.get(kind, []):
                 if name in missing_set:
                     continue
                 n_installed += 1
-                self.table.add_row("", "[green]INSTALLED[/]", singular, f"[dim]{name}[/]")
+                self._all_rows.append((None, ("", "[green]INSTALLED[/]", singular, f"[dim]{name}[/]"),
+                                       f"{name} {singular} installed"))
             for name in extra:
                 n_extra += 1
-                self.table.add_row("", "[yellow]EXTRA[/]", singular, f"[dim]{name}[/]")
+                self._all_rows.append((None, ("", "[yellow]EXTRA[/]", singular, f"[dim]{name}[/]"),
+                                       f"{name} {singular} extra"))
         tag = f"{meta.get('host', '?')} · {meta.get('date', '?')}"
         note = (f"[green]{n_installed} installed[/] · [red]{n_missing} to install[/] · "
                 f"[yellow]{n_extra} extra[/] · backup: [dim]{tag}[/]")
         self.log_widget.write(note)
         self.sub_title = f"backup — {tag}"
+        self._render_table()
+
+    def _render_table(self) -> None:
+        """Clear and re-add rows from _all_rows, applying the filter if active."""
+        self.table.clear()
+        query = self._filter_query.lower() if self._filter_active else ""
+        shown = 0
+        for key, cells, searchable in self._all_rows:
+            if query and query not in searchable.lower():
+                continue
+            self.table.add_row(*cells, key=key)
+            shown += 1
+        if self._filter_active and query and shown == 0:
+            self.log_widget.write(f"[dim]no matches for \"{self._filter_query}\"[/]")
 
     # --- selection ---------------------------------------------------------
     def _current_key(self) -> str | None:
@@ -421,18 +476,77 @@ class BrewCheckerTUI(App):
         return [k.split(":", 1)[1] for k in self.selected if k.startswith(prefix)]
 
     # --- actions -----------------------------------------------------------
+    _VIEW_SUBTITLES = {
+        "reconcile": "cask ⇄ Applications",
+        "casks": "cask versions & upgrades",
+        "formulae": "formula versions & upgrades",
+        "backup": "backup & restore",
+    }
+
     def action_switch_view(self) -> None:
         self.view = self._VIEWS[(self._VIEWS.index(self.view) + 1) % len(self._VIEWS)]
+        self._switch_to_view(self.view)
+
+    def action_goto_reconcile(self) -> None:
+        self.action_goto_view("reconcile")
+
+    def action_goto_casks(self) -> None:
+        self.action_goto_view("casks")
+
+    def action_goto_formulae(self) -> None:
+        self.action_goto_view("formulae")
+
+    def action_goto_backup(self) -> None:
+        self.action_goto_view("backup")
+
+    def action_goto_view(self, view: str) -> None:
+        if view == self.view:
+            return
+        self.view = view
+        self._switch_to_view(view)
+
+    def _switch_to_view(self, view: str) -> None:
         self.selected.clear()
-        self.sub_title = {
-            "reconcile": "cask ⇄ Applications",
-            "casks": "cask versions & upgrades",
-            "formulae": "formula versions & upgrades",
-            "backup": "backup & restore",
-        }[self.view]
+        self._clear_filter()
+        self.sub_title = self._VIEW_SUBTITLES[view]
         self._configure_columns()
         self.refresh_bindings()  # update the footer for the new view
         self.run_worker(self.refresh_state(), exclusive=True)
+
+    # --- search / filter ---------------------------------------------------
+    def action_search(self) -> None:
+        search = self.query_one("#search", Input)
+        search.display = True
+        search.focus()
+        self._filter_active = True
+
+    def _clear_filter(self) -> None:
+        self._filter_query = ""
+        self._filter_active = False
+        search = self.query_one("#search", Input)
+        search.value = ""
+        search.display = False
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "search":
+            return
+        self._filter_query = event.value
+        self._render_table()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "search":
+            return
+        # Enter: keep the filter, just unfocus and hide the bar
+        event.input.display = False
+        self.table.focus()
+
+    def on_key(self, event: Key) -> None:
+        search = self.query_one("#search", Input)
+        if search.has_focus and event.key == "escape":
+            self._clear_filter()
+            self.table.focus()
+            event.prevent_default()
+            event.stop()
 
     def action_toggle_greedy(self) -> None:
         if self.view != "casks":

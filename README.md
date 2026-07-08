@@ -126,7 +126,7 @@ python3 -m venv .venv
 ./run-tui.sh brew-backup.json    # …with a backup loaded in the backup view
 ```
 
-The TUI has four views, cycled with `v`:
+The TUI has four views, switched with `1`–`4` or cycled with `v`:
 
 - **Reconcile** (default) — the MISSING / UNTRACKED lists described above.
 - **Cask versions & upgrades** — every installed cask with its installed version,
@@ -153,7 +153,13 @@ The TUI has four views, cycled with `v`:
 
 | key     | view      | action                                                    |
 |---------|-----------|-----------------------------------------------------------|
-| `v`     | all       | cycle Reconcile → Cask → Formula → Backup                 |
+| `1`     | all       | go to Casks view                                         |
+| `2`     | all       | go to Formulae view                                      |
+| `3`     | all       | go to Reconcile view                                     |
+| `4`     | all       | go to Backup view                                        |
+| `v`     | all       | cycle Casks → Formulae → Reconcile → Backup              |
+| `/`     | all       | filter rows by search text (Enter to close, Esc to clear) |
+| `^p`    | all       | open command palette (type to jump to a view)             |
 | `space` | all       | select / deselect the current row                         |
 | `f5`    | all       | rescan the current view                                   |
 | `q`     | all       | quit                                                      |
