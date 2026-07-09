@@ -54,12 +54,21 @@ they come back automatically), and **casks**.
 
 ```sh
 brew-checker --export > brew-backup.json   # write a backup (or: --export FILE)
+brew-checker --snapshot                    # save into the store, deduped (see below)
 brew-checker --diff brew-backup.json       # what the backup has that this Mac lacks (and vice versa)
 ```
 
 `--diff` prints two lists per category: **MISSING** (in the backup, not installed
 here — the restore candidates) and **EXTRA** (installed here, absent from the
 backup). Exit code is `1` when anything is missing, `0` when in sync.
+
+`--snapshot` is the automation-friendly save: it writes a snapshot into the store
+(`~/.brew-checker/backups/`) but **deduplicates against the latest backup from the
+same host** — if nothing has changed since then, it refreshes that file's date
+instead of creating another copy, so a daily cron job doesn't accumulate identical
+snapshots. Exit code is `10` when a new backup was written (something changed) and
+`0` when an existing one was just refreshed; it prints `created <path>` or
+`unchanged <path>` to stdout.
 
 Exporting and diffing are read-only — the CLI never installs anything. To
 actually **install** the missing items, open the backup in the TUI's backup view
@@ -76,8 +85,10 @@ another Mac. (Recording it runs the same `brew info` scan as the reconcile
 report, so writing a snapshot takes a couple of seconds.)
 
 The TUI keeps its snapshots in `~/.brew-checker/backups/` so they accumulate and
-can be browsed. In the backup view, press `e` to save a fresh timestamped
-snapshot there, and `l` to open a picker listing every saved backup (host, date,
+can be browsed. In the backup view, press `e` to save a snapshot there — this
+uses the same dedup as `--snapshot`, so saving when nothing has changed since your
+last same-host backup just refreshes that file rather than adding a duplicate.
+Press `l` to open a picker listing every saved backup (host, date,
 formula/cask/tap/app counts) — press enter to load and diff one. In the picker,
 `space` toggles a checkmark on one or more backups and `d` deletes the selected
 ones from the store (after a confirmation). The picker opens automatically when
@@ -161,8 +172,9 @@ The TUI has four views, switched with `1`–`4` or cycled with `v`:
   disk), but they're **info-only and never selectable** — brew can't install or
   remove `.app`s. (There's no EXTRA for apps: the machine's full app set includes
   cask-owned apps that were never in the untracked log, so a machine-side "extra"
-  wouldn't be meaningful.) Press `e` to save a fresh snapshot of this machine into
-  the store.
+  wouldn't be meaningful.) Press `e` to save a snapshot of this machine into the
+  store (deduped against your latest same-host backup — an unchanged save just
+  refreshes that file instead of adding a duplicate).
 
 ### Keys
 
@@ -187,7 +199,7 @@ The TUI has four views, switched with `1`–`4` or cycled with `v`:
 | `g`     | casks     | toggle greedy (include auto-updating casks)              |
 | `U`     | backup    | install selected MISSING items (`brew install`, tapping first) |
 | `l`     | backup    | open the picker to load a saved backup                    |
-| `e`     | backup    | save a fresh snapshot of this machine into the store     |
+| `e`     | backup    | save a snapshot into the store (deduped by same-host)   |
 
 The footer only shows the keys relevant to the active view.
 

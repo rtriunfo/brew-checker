@@ -24,7 +24,7 @@ Two files, deliberately split:
   missing, 0 when clean. Also hosts the read-only **backup** engine
   (`build_backup`/`write_backup`/`load_backup`/`diff_backup`, plus
   `installed_formulae`/`installed_taps` and `owned_apps`/`untracked_apps`) and
-  the `--export`/`--diff` CLI actions. A snapshot (schema 2) records taps,
+  the `--export`/`--snapshot`/`--diff` CLI actions. A snapshot (schema 2) records taps,
   formulae, casks, **and** `apps` — the untracked `.app` bundles on disk
   (`untracked_apps()` = `present_apps() − owned_apps()`), a read-only *log* only:
   brew can't install/remove them, so `diff_backup`/`report_diff` surface app
@@ -33,7 +33,13 @@ Two files, deliberately split:
   `load_backup` stays backward-compatible with schema-1 (no `apps`) files.
   Snapshots live in `BACKUP_DIR` (`~/.brew-checker/backups/`); `list_backups()`
   (tolerant — skips foreign JSON) and `default_backup_path()` (timestamped name)
-  back the TUI picker.
+  back the TUI picker. `store_snapshot()` is the deduping save shared by the
+  `--snapshot` CLI action and the TUI's `e`: it writes a fresh snapshot, then if
+  its inventory matches the latest **same-host** backup (`latest_backup(host)` +
+  `snapshots_match`, which compares taps/formulae/casks/apps as sets) it deletes
+  the predecessor so the new file just replaces it (refreshed date + name),
+  returning `(path, created)`. `--snapshot` exits `10` when a new backup was kept,
+  `0` when one was refreshed.
 
 - **`brew-checker-tui.py`** — an interactive [Textual](https://textual.textualize.io/)
   app that *reuses* the engine. It imports `brew-checker.py` by path via
@@ -84,8 +90,9 @@ total. Dropped tokens are returned as "uninspectable" rather than vanishing.
   (`_delete_selected`) rather than awaiting inline — same reason `_pick_backup`
   is a worker. `U`
   reuses `action_upgrade`, dispatching to `_run_restore` (taps missing taps, then
-  `brew install --formula/--cask` the selection); `e` (`action_export`) writes a
-  fresh timestamped snapshot into `BACKUP_DIR` and loads it.
+  `brew install --formula/--cask` the selection); `e` (`action_export` →
+  `_do_export`, a worker) saves a snapshot via `core.store_snapshot` (deduped
+  against the latest same-host backup) off the UI thread and loads the result.
 - Row keys are prefixed (e.g. `missing:`, `untracked:`) so `_selected(prefix)`
   can filter selections; `check_action` gates which key bindings show per view.
 - **State-changing brew commands run in a suspended terminal**, not in the log

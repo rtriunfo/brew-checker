@@ -100,6 +100,58 @@ def list_backups():
     return entries
 
 
+def snapshots_match(a, b):
+    """True if two backups have identical inventories (ignoring meta host/date).
+
+    Compares taps/formulae/casks/apps as sets — order and duplicates don't matter.
+    """
+    return all(set(a.get(k, [])) == set(b.get(k, []))
+               for k in ("taps", "formulae", "casks", "apps"))
+
+
+def latest_backup(host=None):
+    """The newest store backup as (path, obj), optionally restricted to one host.
+
+    Returns None when the store has no matching backup. Skips files that turn
+    unreadable between listing and loading (tolerant, like list_backups).
+    """
+    for path, meta, *_ in list_backups():  # newest first
+        if host is not None and meta.get("host") != host:
+            continue
+        try:
+            with open(path) as f:
+                return path, json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def store_snapshot(backup=None):
+    """Save a snapshot into the store, deduped against the latest same-host backup.
+
+    Writes `backup` (or a freshly built one) to a new timestamped path. If its
+    inventory matches the latest existing backup from the same host, the old file
+    is removed so the fresh one simply replaces it (same content, refreshed date
+    and filename) — this keeps automated/repeated runs from piling up identical
+    snapshots. Returns (path, created): created is False when an unchanged backup
+    replaced its predecessor, True when a genuinely new snapshot was kept.
+    """
+    if backup is None:
+        backup = build_backup()
+    prev = latest_backup(host=backup.get("meta", {}).get("host"))
+    path = default_backup_path()
+    write_backup(backup, path)
+    if prev is not None and snapshots_match(backup, prev[1]):
+        prev_path = prev[0]
+        if os.path.abspath(prev_path) != os.path.abspath(path):
+            try:
+                os.remove(prev_path)
+            except OSError:
+                pass  # leaving a stale duplicate is harmless; the new one stands
+        return path, False
+    return path, True
+
+
 def build_backup():
     """Snapshot the current machine's explicit formulae, casks, taps, and the
     untracked .app bundles on disk.
@@ -263,6 +315,11 @@ def parse_args():
     p.add_argument("--export", nargs="?", const="-", metavar="FILE",
                    help="write a backup of installed formulae/casks/taps as JSON "
                         "(to FILE, or stdout if omitted)")
+    p.add_argument("--snapshot", action="store_true",
+                   help="save a snapshot into the store (~/.brew-checker/backups), "
+                        "deduped against the latest same-host backup: refreshes "
+                        "that file's date if nothing changed, else writes a new one "
+                        "(exit 0 = unchanged, 10 = new backup written)")
     p.add_argument("--diff", metavar="FILE",
                    help="show what a backup FILE has that this machine doesn't (and vice versa)")
     args = p.parse_args()
@@ -315,6 +372,18 @@ def main(args):
         write_backup(build_backup(), args.export)
         if args.export not in (None, "-"):
             log(f"  wrote {args.export}")
+        sys.exit(0)
+    if args.snapshot:
+        log("Building snapshot…")
+        path, created = store_snapshot()
+        # One machine-readable line to stdout for scripts; detail/exit code convey
+        # whether anything changed (10) or the existing file was just refreshed (0).
+        if created:
+            log(f"  changes detected — wrote {path}")
+            print(f"created {path}")
+            sys.exit(10)
+        log(f"  no changes — refreshed {path}")
+        print(f"unchanged {path}")
         sys.exit(0)
     if args.diff is not None:
         log("Diffing backup against this machine…")

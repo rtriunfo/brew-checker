@@ -714,17 +714,25 @@ class BrewCheckerTUI(App):
     def action_export(self) -> None:
         if self.view != "backup":
             return
-        # Always write a fresh timestamped snapshot into the store, so backups
-        # accumulate for the picker, then load it.
-        path = core.default_backup_path()
+        self._do_export()
+
+    @work(exclusive=True)
+    async def _do_export(self) -> None:
+        # store_snapshot dedupes against the latest same-host backup: unchanged
+        # runs refresh that file instead of piling up duplicates. Building the
+        # snapshot hits brew, so it runs in a thread to keep the UI responsive.
+        self.log_widget.write("[dim]saving snapshot…[/]")
         try:
-            core.write_backup(core.build_backup(), path)
+            path, created = await asyncio.to_thread(core.store_snapshot)
         except OSError as exc:
             self.log_widget.write(f"[red]export failed: {exc}[/]")
             return
         self.backup_path = path
-        self.log_widget.write(f"[green]saved[/] this machine's state → [b]{path}[/]")
-        self.run_worker(self.refresh_state(), exclusive=True)
+        if created:
+            self.log_widget.write(f"[green]saved[/] new snapshot → [b]{path}[/]")
+        else:
+            self.log_widget.write(f"[dim]no changes — refreshed[/] [b]{path}[/]")
+        await self.refresh_state()
 
     def action_reinstall(self) -> None:
         self._run_cask_action("m:", "reinstall")
