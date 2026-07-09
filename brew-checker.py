@@ -129,26 +129,30 @@ def latest_backup(host=None):
 def store_snapshot(backup=None):
     """Save a snapshot into the store, deduped against the latest same-host backup.
 
-    Writes `backup` (or a freshly built one) to a new timestamped path. If its
-    inventory matches the latest existing backup from the same host, the old file
-    is removed so the fresh one simply replaces it (same content, refreshed date
-    and filename) — this keeps automated/repeated runs from piling up identical
-    snapshots. Returns (path, created): created is False when an unchanged backup
-    replaced its predecessor, True when a genuinely new snapshot was kept.
+    If the current inventory matches the latest existing backup from the same
+    host, this is a no-op on disk — the existing file's mtime is bumped (so it
+    still sorts as newest) but nothing is written or deleted. Otherwise a new
+    timestamped snapshot is written and the older ones are left in place as
+    history. Returns (path, created): created is False when nothing changed
+    (path points at the existing file), True when a new snapshot was written.
+
+    The no-op-on-unchanged behaviour is deliberate: it keeps repeated/automated
+    runs from churning the store, which matters when the store is a git repo
+    (see snapshot-sync.sh) — an unchanged run leaves the working tree clean, so
+    commits only happen on real inventory changes. An mtime bump is invisible to
+    git, so it doesn't dirty the tree.
     """
     if backup is None:
         backup = build_backup()
     prev = latest_backup(host=backup.get("meta", {}).get("host"))
+    if prev is not None and snapshots_match(backup, prev[1]):
+        try:
+            os.utime(prev[0], None)  # mark "seen now" without touching content
+        except OSError:
+            pass
+        return prev[0], False
     path = default_backup_path()
     write_backup(backup, path)
-    if prev is not None and snapshots_match(backup, prev[1]):
-        prev_path = prev[0]
-        if os.path.abspath(prev_path) != os.path.abspath(path):
-            try:
-                os.remove(prev_path)
-            except OSError:
-                pass  # leaving a stale duplicate is harmless; the new one stands
-        return path, False
     return path, True
 
 

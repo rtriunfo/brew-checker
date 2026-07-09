@@ -64,11 +64,12 @@ backup). Exit code is `1` when anything is missing, `0` when in sync.
 
 `--snapshot` is the automation-friendly save: it writes a snapshot into the store
 (`~/.brew-checker/backups/`) but **deduplicates against the latest backup from the
-same host** — if nothing has changed since then, it refreshes that file's date
-instead of creating another copy, so a daily cron job doesn't accumulate identical
-snapshots. Exit code is `10` when a new backup was written (something changed) and
-`0` when an existing one was just refreshed; it prints `created <path>` or
-`unchanged <path>` to stdout.
+same host** — if nothing has changed since then it's a no-op on disk (no new file,
+nothing rewritten), so a daily cron job doesn't accumulate identical snapshots.
+Exit code is `10` when a new backup was written (something changed) and `0` when
+nothing changed; it prints `created <path>` or `unchanged <path>` to stdout. See
+[Automating snapshots](#automating-snapshots-cron--git) below for the cron + git
+wrapper.
 
 Exporting and diffing are read-only — the CLI never installs anything. To
 actually **install** the missing items, open the backup in the TUI's backup view
@@ -87,13 +88,51 @@ report, so writing a snapshot takes a couple of seconds.)
 The TUI keeps its snapshots in `~/.brew-checker/backups/` so they accumulate and
 can be browsed. In the backup view, press `e` to save a snapshot there — this
 uses the same dedup as `--snapshot`, so saving when nothing has changed since your
-last same-host backup just refreshes that file rather than adding a duplicate.
+last same-host backup does nothing rather than adding a duplicate.
 Press `l` to open a picker listing every saved backup (host, date,
 formula/cask/tap/app counts) — press enter to load and diff one. In the picker,
 `space` toggles a checkmark on one or more backups and `d` deletes the selected
 ones from the store (after a confirmation). The picker opens automatically when
 you enter the backup view with nothing loaded. (A file passed on launch,
 `run-tui.sh <file>`, bypasses the store and loads that file directly.)
+
+### Automating snapshots (cron + git)
+
+`snapshot-sync.sh` turns the store into a version-controlled, off-machine backup:
+it takes a snapshot and, **only when the inventory actually changed**, commits and
+pushes `~/.brew-checker` to a (private) git remote. It's designed to run
+unattended from cron.
+
+It doesn't judge "did anything change?" itself — it lets git decide. `--snapshot`
+is a no-op on disk when nothing changed, so the working tree stays clean and the
+script commits only on a real change. This also makes it safe alongside the TUI:
+a snapshot you save manually with `e` is just an uncommitted file that the next
+run picks up and commits. Unchanged runs do nothing; a failed push (offline, auth)
+is kept locally and retried next run. Activity is logged to
+`~/.brew-checker/snapshot-sync.log`.
+
+**One-time setup** — create the private remote once (the recurring script never
+creates repos):
+
+```sh
+./snapshot-sync.sh                        # first run: creates the repo + initial commit
+cd ~/.brew-checker
+gh repo create brew-checker-backups --private --source=. --remote=origin --push
+# …or manually:
+#   git remote add origin git@github.com:<you>/brew-checker-backups.git
+#   git push -u origin main
+```
+
+**Schedule it** — e.g. daily at 09:00 (`crontab -e`):
+
+```cron
+0 9 * * * /Users/<you>/dev/brew-checker/snapshot-sync.sh
+```
+
+> **Push auth must be non-interactive.** cron can't type a passphrase, so the
+> `origin` remote needs an SSH key loaded in an agent, or a `gh`/credential-helper
+> token — otherwise pushes fail (commits still accumulate locally). The script sets
+> a cron-safe `PATH` itself, so `brew`/`python3`/`brew-checker` resolve.
 
 ## Requirements
 
@@ -173,8 +212,8 @@ The TUI has four views, switched with `1`–`4` or cycled with `v`:
   remove `.app`s. (There's no EXTRA for apps: the machine's full app set includes
   cask-owned apps that were never in the untracked log, so a machine-side "extra"
   wouldn't be meaningful.) Press `e` to save a snapshot of this machine into the
-  store (deduped against your latest same-host backup — an unchanged save just
-  refreshes that file instead of adding a duplicate).
+  store (deduped against your latest same-host backup — an unchanged save is a
+  no-op rather than adding a duplicate).
 
 ### Keys
 

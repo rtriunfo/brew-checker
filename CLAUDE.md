@@ -34,12 +34,14 @@ Two files, deliberately split:
   Snapshots live in `BACKUP_DIR` (`~/.brew-checker/backups/`); `list_backups()`
   (tolerant — skips foreign JSON) and `default_backup_path()` (timestamped name)
   back the TUI picker. `store_snapshot()` is the deduping save shared by the
-  `--snapshot` CLI action and the TUI's `e`: it writes a fresh snapshot, then if
-  its inventory matches the latest **same-host** backup (`latest_backup(host)` +
-  `snapshots_match`, which compares taps/formulae/casks/apps as sets) it deletes
-  the predecessor so the new file just replaces it (refreshed date + name),
-  returning `(path, created)`. `--snapshot` exits `10` when a new backup was kept,
-  `0` when one was refreshed.
+  `--snapshot` CLI action and the TUI's `e`: if the inventory matches the latest
+  **same-host** backup (`latest_backup(host)` + `snapshots_match`, comparing
+  taps/formulae/casks/apps as sets) it's a **no-op on disk** — only an mtime bump
+  (invisible to git) — otherwise it writes a new timestamped snapshot and leaves
+  older ones as history (it never auto-deletes). Returns `(path, created)`;
+  `--snapshot` exits `10` when a new backup was written, `0` when nothing changed.
+  The no-op-on-unchanged behaviour is what lets `snapshot-sync.sh` (below) commit
+  only on real changes and stay safe alongside TUI-created snapshots.
 
 - **`brew-checker-tui.py`** — an interactive [Textual](https://textual.textualize.io/)
   app that *reuses* the engine. It imports `brew-checker.py` by path via
@@ -106,6 +108,9 @@ total. Dropped tokens are returned as "uninspectable" rather than vanishing.
 # Run the CLI (stdlib only, no setup)
 ./brew-checker.py                 # or: brew-checker  (if symlinked onto PATH)
 
+# Cron wrapper: snapshot, then commit+push the store to git only if it changed
+./snapshot-sync.sh                # store = git repo at ~/.brew-checker
+
 # TUI — one-time setup
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
@@ -136,3 +141,11 @@ stays git-ignored — this is purely so the local artifact matches the source.
   TUI.
 - Any change touching the report format or the MISSING/UNTRACKED/UNINSPECTABLE
   semantics should be reflected in `README.md`, which documents them in detail.
+- `snapshot-sync.sh` is the cron wrapper. It never decides whether anything
+  changed — it runs `brew-checker --snapshot` (which no-ops on disk when nothing
+  changed) then lets git decide: `git add -A` + `git diff --cached --quiet` →
+  commit + push (to `origin`, if set) only on a real change. This keeps it correct
+  alongside TUI-created snapshots (an uncommitted TUI file is just committed next
+  run) and depends on `store_snapshot`'s no-op-on-unchanged contract — don't
+  reintroduce per-run file churn without revisiting this. It sets its own
+  cron-safe `PATH` and uses a `mkdir` lock (no `flock` on macOS).
