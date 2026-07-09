@@ -152,16 +152,16 @@ class BackupPickerScreen(ModalScreen[str | None]):
 
     def __init__(self, entries):
         super().__init__()
-        self._entries = entries  # [(path, meta, n_formulae, n_casks, n_taps), …]
+        self._entries = entries  # [(path, meta, n_formulae, n_casks, n_taps, n_apps), …]
         self._selected: set[int] = set()
 
     def _option_label(self, idx: int) -> str:
-        path, meta, nf, nc, nt = self._entries[idx]
+        path, meta, nf, nc, nt, na = self._entries[idx]
         host = meta.get("host", "?")
         date = meta.get("date", "?")
-        total = nf + nc + nt
+        total = nf + nc + nt + na
         mark = "✔ " if idx in self._selected else "  "
-        return f"{mark}{host:<16} {date:<20} {nf}f {nc}c {nt}t ({total} total)"
+        return f"{mark}{host:<16} {date:<20} {nf}f {nc}c {nt}t {na}a ({total} total)"
 
     def _refresh_picker(self) -> None:
         picker = self.query_one("#picker", OptionList)
@@ -468,7 +468,11 @@ class BrewCheckerTUI(App):
         """Show the full backup inventory, one row per item, with its status:
         MISSING (in backup, not here — selectable+installable), INSTALLED (in both,
         info-only), or EXTRA (here, not in backup — info-only). Even a backup that
-        matches this machine shows its whole list, all marked INSTALLED."""
+        matches this machine shows its whole list, all marked INSTALLED.
+
+        Untracked apps (schema-2 backups) are appended as a read-only log: they
+        reuse the MISSING/INSTALLED/EXTRA labels but are never selectable, since
+        brew can't install or remove them."""
         self._all_rows = []
         # key prefixes: formulae "bf:", casks "bc:" (taps shown but not selectable)
         prefixes = {"formulae": "bf", "casks": "bc"}
@@ -497,9 +501,32 @@ class BrewCheckerTUI(App):
                 n_extra += 1
                 self._all_rows.append((None, ("", "[yellow]EXTRA[/]", singular, f"[dim]{name}[/]"),
                                        f"{name} {singular} extra"))
+        # Untracked apps: a read-only log. Rows are never selectable (key None),
+        # and "gone" apps don't count toward "to install" — they can't be. There's
+        # no EXTRA here: the machine's full app set includes cask-owned apps that
+        # were never in this untracked list, so we only mark each recorded app as
+        # still-present or gone.
+        n_apps_gone = n_apps_here = 0
+        if "apps" in backup:
+            app_missing = diff["apps"][0]  # recorded but no longer on disk (sorted)
+            app_missing_set = set(app_missing)
+            for name in app_missing:  # gone first
+                n_apps_gone += 1
+                self._all_rows.append((None, ("", "[red]MISSING[/]", "app", f"[dim]{name}[/]"),
+                                       f"{name} app missing gone"))
+            for name in backup.get("apps", []):  # recorded and still present
+                if name in app_missing_set:
+                    continue
+                n_apps_here += 1
+                self._all_rows.append((None, ("", "[green]INSTALLED[/]", "app", f"[dim]{name}[/]"),
+                                       f"{name} app installed"))
+
         tag = f"{meta.get('host', '?')} · {meta.get('date', '?')}"
         note = (f"[green]{n_installed} installed[/] · [red]{n_missing} to install[/] · "
                 f"[yellow]{n_extra} extra[/] · backup: [dim]{tag}[/]")
+        if "apps" in backup:
+            note += (f"\n[dim]apps log: {n_apps_here} on disk · "
+                     f"{n_apps_gone} recorded but gone (read-only)[/]")
         self.log_widget.write(note)
         self.sub_title = f"backup — {tag}"
         self._render_table()

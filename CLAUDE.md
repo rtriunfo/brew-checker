@@ -23,7 +23,14 @@ Two files, deliberately split:
   colours auto-strip when stdout isn't a TTY. Exit code 1 when anything is
   missing, 0 when clean. Also hosts the read-only **backup** engine
   (`build_backup`/`write_backup`/`load_backup`/`diff_backup`, plus
-  `installed_formulae`/`installed_taps`) and the `--export`/`--diff` CLI actions.
+  `installed_formulae`/`installed_taps` and `owned_apps`/`untracked_apps`) and
+  the `--export`/`--diff` CLI actions. A snapshot (schema 2) records taps,
+  formulae, casks, **and** `apps` — the untracked `.app` bundles on disk
+  (`untracked_apps()` = `present_apps() − owned_apps()`), a read-only *log* only:
+  brew can't install/remove them, so `diff_backup`/`report_diff` surface app
+  differences but never as restore candidates. Recording `apps` makes
+  `build_backup` incur the bulk `brew info` call the reconcile uses.
+  `load_backup` stays backward-compatible with schema-1 (no `apps`) files.
   Snapshots live in `BACKUP_DIR` (`~/.brew-checker/backups/`); `list_backups()`
   (tolerant — skips foreign JSON) and `default_backup_path()` (timestamped name)
   back the TUI picker.
@@ -64,7 +71,10 @@ total. Dropped tokens are returned as "uninspectable" rather than vanishing.
   (via the engine's `diff_backup` plus the backup's own item lists): one row per
   item tagged INSTALLED (info-only), MISSING (selectable/installable, sorted
   first), or EXTRA (info-only) — so a matching backup still shows its whole list
-  rather than a blank table. The backup is chosen with `l` (`action_load` →
+  rather than a blank table. Schema-2 backups append their untracked-apps log at
+  the end as non-selectable (key `None`) info rows tagged MISSING (recorded, gone)
+  or INSTALLED (still present), excluded from the "to install" count; there's no
+  EXTRA for apps (see `diff_backup`). The backup is chosen with `l` (`action_load` →
   `BackupPickerScreen`, an
   `OptionList` modal over `core.list_backups()`); the picker auto-opens on
   entering the view with nothing loaded, and a launch-arg path bypasses it. In

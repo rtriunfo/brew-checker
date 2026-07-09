@@ -67,10 +67,18 @@ actually **install** the missing items, open the backup in the TUI's backup view
 
 ### The backup store
 
+A snapshot records the machine's explicit **taps, formulae, and casks** (which
+the backup view can reinstall) plus a read-only **log of untracked `.app`
+bundles** — apps on disk that no cask owns (App Store apps, hand-installed
+`.app`s, …). brew-checker can't install or remove those apps; the list is there
+so a snapshot doubles as a record of what was on the machine, viewable from
+another Mac. (Recording it runs the same `brew info` scan as the reconcile
+report, so writing a snapshot takes a couple of seconds.)
+
 The TUI keeps its snapshots in `~/.brew-checker/backups/` so they accumulate and
 can be browsed. In the backup view, press `e` to save a fresh timestamped
 snapshot there, and `l` to open a picker listing every saved backup (host, date,
-formula/cask/tap counts) — press enter to load and diff one. In the picker,
+formula/cask/tap/app counts) — press enter to load and diff one. In the picker,
 `space` toggles a checkmark on one or more backups and `d` deletes the selected
 ones from the store (after a confirmation). The picker opens automatically when
 you enter the backup view with nothing loaded. (A file passed on launch,
@@ -148,8 +156,13 @@ The TUI has four views, switched with `1`–`4` or cycled with `v`:
   **MISSING** (in the backup, not installed here), or **EXTRA** (installed here,
   not in the backup). MISSING rows sort to the top of each section and are
   selectable — select them and press `U` to install (any taps the backup needs
-  are added first). Press `e` to save a fresh snapshot of this machine into the
-  store.
+  are added first). Untracked apps recorded in the snapshot are listed at the end
+  tagged **INSTALLED** (still on disk) or **MISSING** (recorded but no longer on
+  disk), but they're **info-only and never selectable** — brew can't install or
+  remove `.app`s. (There's no EXTRA for apps: the machine's full app set includes
+  cask-owned apps that were never in the untracked log, so a machine-side "extra"
+  wouldn't be meaningful.) Press `e` to save a fresh snapshot of this machine into
+  the store.
 
 ### Keys
 

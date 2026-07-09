@@ -60,7 +60,7 @@ def installed_taps():
 # A backup is a portable snapshot of what you explicitly installed, so it can be
 # recreated on another machine. It's plain data (JSON) — writing one doesn't
 # touch brew; only the TUI's restore actually installs anything.
-SCHEMA = 1
+SCHEMA = 2
 
 # Where the TUI keeps its snapshots so they accumulate and can be browsed.
 BACKUP_DIR = os.path.expanduser("~/.brew-checker/backups")
@@ -75,8 +75,9 @@ def default_backup_path():
 def list_backups():
     """Every readable backup in BACKUP_DIR, newest first.
 
-    Returns [(path, meta, n_formulae, n_casks, n_taps), …]. Unreadable/foreign
-    JSON files are skipped (this is tolerant, unlike load_backup which hard-exits).
+    Returns [(path, meta, n_formulae, n_casks, n_taps, n_apps), …].
+    Unreadable/foreign JSON files are skipped (this is tolerant, unlike
+    load_backup which hard-exits).
     """
     if not os.path.isdir(BACKUP_DIR):
         return []
@@ -94,13 +95,21 @@ def list_backups():
             continue
         entries.append((path, obj.get("meta", {}),
                         len(obj["formulae"]), len(obj["casks"]),
-                        len(obj.get("taps", []))))
+                        len(obj.get("taps", [])), len(obj.get("apps", []))))
     entries.sort(key=lambda e: os.path.getmtime(e[0]), reverse=True)
     return entries
 
 
 def build_backup():
-    """Snapshot the current machine's explicit formulae, casks, and taps."""
+    """Snapshot the current machine's explicit formulae, casks, taps, and the
+    untracked .app bundles on disk.
+
+    The `apps` list is a read-only *log* of applications no cask owns (App Store
+    apps, hand-installed .apps, …). brew-checker can't install or remove them; it
+    records them so a snapshot doubles as a record of what was on the machine.
+    Computing it needs the same bulk `brew info` call the reconcile report uses,
+    so this is slower than a taps/formulae/casks-only snapshot.
+    """
     return {
         "schema": SCHEMA,
         "meta": {
@@ -110,6 +119,7 @@ def build_backup():
         "taps": installed_taps(),
         "formulae": installed_formulae(),
         "casks": installed_casks(),
+        "apps": untracked_apps(),
     }
 
 
@@ -142,14 +152,19 @@ def load_backup(path):
 def diff_backup(backup):
     """Compare a backup against what's installed now.
 
-    Returns {kind: (missing, extra)} for kind in taps/formulae/casks, where
-    `missing` = in the backup but not installed here (restore candidates) and
-    `extra` = installed here but absent from the backup.
+    Returns {kind: (missing, extra)} for kind in taps/formulae/casks/apps, where
+    `missing` = in the backup but not present here and `extra` = present here but
+    absent from the backup. For taps/formulae/casks `missing` items are restore
+    candidates; for `apps` the diff is informational only — those .apps aren't
+    brew-managed, so `missing` just means "recorded but no longer on disk". The
+    apps `extra` isn't meaningful (it's the machine's *full* app set minus the
+    backup's untracked subset, so it includes cask-owned apps) — callers ignore it.
     """
     current = {
         "taps": set(installed_taps()),
         "formulae": set(installed_formulae()),
         "casks": set(installed_casks()),
+        "apps": present_apps(),
     }
     result = {}
     for kind, have in current.items():
@@ -215,6 +230,27 @@ def app_exists(app):
     return any(os.path.exists(os.path.join(d, app)) for d in APP_DIRS)
 
 
+def owned_apps(tokens=None):
+    """Set of every .app basename an installed cask is responsible for.
+
+    Uses the same bulk `brew info` path as the reconcile report; tokens brew
+    can't inspect are skipped (their apps just won't count as owned).
+    """
+    if tokens is None:
+        tokens = installed_casks()
+    mapping, unknown = cask_apps(tokens)
+    owned = set()
+    for token in tokens:
+        if token not in unknown:
+            owned.update(mapping.get(token, []))
+    return owned
+
+
+def untracked_apps():
+    """Sorted .app basenames on disk that no installed cask owns (a log only)."""
+    return sorted(present_apps() - owned_apps())
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="Reconcile installed Homebrew casks against the Applications folders.",
@@ -255,6 +291,16 @@ def report_diff(backup):
               f"({len(extra)}){RESET}")
         for name in extra:
             print(f"  {YELLOW}?{RESET} {name}")
+        print()
+    # Untracked apps are a log, not restore candidates — only "in backup, gone
+    # now" is meaningful (the machine's full app set includes cask-owned apps that
+    # were never in this untracked list, so a machine-side "extra" isn't useful).
+    if "apps" in backup:
+        app_missing, _ = diff["apps"]
+        print(f"{BOLD}{RED}APPS in backup, not on disk now — untracked, not "
+              f"restorable ({len(app_missing)}){RESET}")
+        for name in app_missing:
+            print(f"  {RED}✗{RESET} {name}")
         print()
     if any_missing:
         print(f"{DIM}Install the missing items from the TUI's backup view: "
