@@ -56,11 +56,18 @@ they come back automatically), and **casks**.
 brew-checker --export > brew-backup.json   # write a backup (or: --export FILE)
 brew-checker --snapshot                    # save into the store, deduped (see below)
 brew-checker --diff brew-backup.json       # what the backup has that this Mac lacks (and vice versa)
+brew-checker --diff-snapshots old.json new.json  # what changed between two saved snapshots
 ```
 
 `--diff` prints two lists per category: **MISSING** (in the backup, not installed
 here — the restore candidates) and **EXTRA** (installed here, absent from the
 backup). Exit code is `1` when anything is missing, `0` when in sync.
+
+`--diff-snapshots BEFORE AFTER` compares two snapshot **files** to each other
+(neither is this machine), framed chronologically as **ADDED** (in `AFTER`, not
+`BEFORE`) and **REMOVED** (in `BEFORE`, not `AFTER`) per category. It's a pure
+diff of the two JSON files — no `brew` calls. Exit code is `1` when the snapshots
+differ, `0` when identical. (Apps are only compared when both files record them.)
 
 `--snapshot` is the automation-friendly save: it writes a snapshot into the store
 (`~/.brew-checker/backups/`) but **deduplicates against the latest backup from the
@@ -95,6 +102,13 @@ formula/cask/tap/app counts) — press enter to load and diff one. In the picker
 ones from the store (after a confirmation). The picker opens automatically when
 you enter the backup view with nothing loaded. (A file passed on launch,
 `run-tui.sh <file>`, bypasses the store and loads that file directly.)
+
+With a backup loaded, press `c` to **compare it against another saved snapshot**
+(rather than against this machine): pick a second snapshot and the table re-renders
+showing **only the differences**, framed chronologically as **ADDED** / **REMOVED**
+(older → newer). These rows are informational only — comparing two snapshots
+installs nothing. Load a backup again (`l`) or switch views to return to the normal
+backup-vs-machine view.
 
 ### Automating snapshots (cron + git)
 
@@ -213,7 +227,11 @@ The TUI has four views, switched with `1`–`4` or cycled with `v`:
   cask-owned apps that were never in the untracked log, so a machine-side "extra"
   wouldn't be meaningful.) Press `e` to save a snapshot of this machine into the
   store (deduped against your latest same-host backup — an unchanged save is a
-  no-op rather than adding a duplicate).
+  no-op rather than adding a duplicate). Press `c` to instead **compare the loaded
+  backup against another saved snapshot** — the table switches to showing only the
+  differences, framed as ADDED / REMOVED (older → newer); those rows are
+  info-only. Loading a backup again or switching views returns to the
+  backup-vs-machine view.
 
 ### Keys
 
@@ -238,6 +256,7 @@ The TUI has four views, switched with `1`–`4` or cycled with `v`:
 | `g`     | casks     | toggle greedy (include auto-updating casks)              |
 | `U`     | backup    | install selected MISSING items (`brew install`, tapping first) |
 | `l`     | backup    | open the picker to load a saved backup                    |
+| `c`     | backup    | compare the loaded backup against another saved snapshot  |
 | `e`     | backup    | save a snapshot into the store (deduped by same-host)   |
 
 The footer only shows the keys relevant to the active view.

@@ -15,6 +15,7 @@ the log pane on the right.
 """
 
 import asyncio
+import datetime
 import importlib.util
 import json
 import os
@@ -105,6 +106,17 @@ def compute_backup_diff(path):
     return backup.get("meta", {}), backup, core.diff_backup(backup)
 
 
+def compute_compare(path_a, path_b):
+    """Load two snapshots and diff them against each other (not the machine).
+
+    Returns (meta_a, meta_b, a, b, diff) where diff = core.diff_snapshots(a, b);
+    the full snapshots are returned so the view can label them. Blocking.
+    """
+    a = core.load_backup(path_a)
+    b = core.load_backup(path_b)
+    return a.get("meta", {}), b.get("meta", {}), a, b, core.diff_snapshots(a, b)
+
+
 class ConfirmScreen(ModalScreen[bool]):
     """Yes/No modal that lists the exact commands about to run."""
 
@@ -150,10 +162,11 @@ class BackupPickerScreen(ModalScreen[str | None]):
         Binding("d", "delete", "Delete"),
     ]
 
-    def __init__(self, entries):
+    def __init__(self, entries, title="Load a backup"):
         super().__init__()
         self._entries = entries  # [(path, meta, n_formulae, n_casks, n_taps, n_apps), …]
         self._selected: set[int] = set()
+        self._title = title
 
     def _option_label(self, idx: int) -> str:
         path, meta, nf, nc, nt, na = self._entries[idx]
@@ -171,7 +184,7 @@ class BackupPickerScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label("Load a backup", id="dialog-title")
+            yield Label(self._title, id="dialog-title")
             options = [Option(self._option_label(i)) for i in range(len(self._entries))]
             yield OptionList(*options, id="picker")
 
@@ -264,6 +277,7 @@ class BrewCheckerTUI(App):
         Binding("U", "upgrade", "Install/Upgrade"),
         Binding("g", "toggle_greedy", "Greedy"),
         Binding("l", "load", "Load"),
+        Binding("c", "compare", "Compare"),
         Binding("e", "export", "Export"),
         Binding("f5", "rescan", "Rescan"),
         Binding("q", "quit", "Quit"),
@@ -286,6 +300,7 @@ class BrewCheckerTUI(App):
         self.show = {"m": True, "u": True}  # which reconcile groups are visible
         self.greedy = False                 # include auto-updating casks in outdated
         self.backup_path = backup_path      # backup file for the restore view (or None)
+        self._compare_path: str | None = None  # 2nd snapshot to compare against (or None)
         self._missing: list = []
         self._untracked: list = []
         self._unknown: list = []
@@ -310,6 +325,11 @@ class BrewCheckerTUI(App):
     def log_widget(self) -> RichLog:
         return self.query_one("#log", RichLog)
 
+    @property
+    def _comparing(self) -> bool:
+        """True when the backup view is showing a snapshot-to-snapshot diff."""
+        return self.view == "backup" and self._compare_path is not None
+
     async def on_mount(self) -> None:
         self._configure_columns()
         self.log_widget.write("[dim]1[/]=casks  [dim]2[/]=formulae  [dim]3[/]=reconcile  [dim]4[/]=backup  "
@@ -320,11 +340,12 @@ class BrewCheckerTUI(App):
         """Hide view-specific bindings from the footer when they don't apply."""
         if action in self._RECONCILE_ONLY and self.view != "reconcile":
             return None
-        if action == "upgrade" and self.view not in self._UPGRADE_VIEWS:
-            return None
+        if action == "upgrade" and (self.view not in self._UPGRADE_VIEWS
+                                    or self._comparing):
+            return None  # nothing is installable while comparing two snapshots
         if action == "toggle_greedy" and self.view != "casks":
             return None  # greedy is a cask-only concept
-        if action in ("export", "load") and self.view != "backup":
+        if action in ("export", "load", "compare") and self.view != "backup":
             return None  # backup store actions only belong in the backup view
         return True
 
@@ -384,6 +405,18 @@ class BrewCheckerTUI(App):
 
     async def _refresh_backup(self) -> None:
         self.table.clear()
+        if self._comparing:
+            self.log_widget.write("[dim]comparing snapshots…[/]")
+            try:
+                meta_a, meta_b, a, b, diff = await asyncio.to_thread(
+                    compute_compare, self.backup_path, self._compare_path)
+            except SystemExit as exc:  # load_backup raises this on bad/missing files
+                self._compare_path = None
+                self.log_widget.write(f"[red]{exc}[/]")
+                self.sub_title = "backup — compare failed"
+                return
+            self._populate_compare(meta_a, meta_b, a, b, diff)
+            return
         if not self.backup_path:
             self._backup_diff = None
             self.sub_title = "backup — none loaded"
@@ -531,6 +564,66 @@ class BrewCheckerTUI(App):
         self.sub_title = f"backup — {tag}"
         self._render_table()
 
+    @staticmethod
+    def _snapshot_tag(meta) -> str:
+        return f"{meta.get('host', '?')} · {meta.get('date', '?')}"
+
+    def _populate_compare(self, meta_a, meta_b, a, b, diff) -> None:
+        """Show only the differences between two snapshots (neither is the machine).
+
+        `a` is the loaded backup, `b` the one picked to compare against. Rows are
+        framed chronologically by meta.date: the newer snapshot's exclusives are
+        ADDED (green), the older's are REMOVED (red). When either date is missing
+        or unparseable, fall back to neutral 'only loaded' / 'only picked' labels.
+        Every row is info-only (key None) — comparing snapshots installs nothing.
+        """
+        def parse_date(meta):
+            try:
+                return datetime.datetime.fromisoformat(meta.get("date", ""))
+            except (TypeError, ValueError):
+                return None
+
+        da, db = parse_date(meta_a), parse_date(meta_b)
+        # diff[kind] = (only_in_a, only_in_b); a is loaded, b is picked.
+        if da is not None and db is not None:
+            # Chronological: whichever snapshot is newer supplies the ADDED items.
+            a_is_newer = da >= db
+            added_label, removed_label = "[green]ADDED[/]", "[red]REMOVED[/]"
+        else:
+            a_is_newer = True  # neutral labelling, loaded == "A" side
+            added_label, removed_label = "[green]only loaded[/]", "[red]only picked[/]"
+
+        self._all_rows = []
+        n_added = n_removed = 0
+        for kind in ("taps", "formulae", "casks", "apps"):
+            if kind not in diff:
+                continue  # apps absent when either snapshot is schema-1
+            only_a, only_b = diff[kind]
+            added, removed = (only_a, only_b) if a_is_newer else (only_b, only_a)
+            singular = kind[:-1]
+            for name in added:
+                n_added += 1
+                self._all_rows.append((None, ("", added_label, singular, f"[dim]{name}[/]"),
+                                       f"{name} {singular} added"))
+            for name in removed:
+                n_removed += 1
+                self._all_rows.append((None, ("", removed_label, singular, f"[dim]{name}[/]"),
+                                       f"{name} {singular} removed"))
+
+        tag_a, tag_b = self._snapshot_tag(meta_a), self._snapshot_tag(meta_b)
+        if da is not None and db is not None:
+            before, after = (tag_b, tag_a) if a_is_newer else (tag_a, tag_b)
+            arrow = f"[dim]{before}[/]  →  [dim]{after}[/]"
+        else:
+            arrow = f"loaded [dim]{tag_a}[/]  vs  picked [dim]{tag_b}[/]"
+        if n_added or n_removed:
+            note = f"[green]{n_added} added[/] · [red]{n_removed} removed[/] · {arrow}"
+        else:
+            note = f"[green]snapshots are identical[/] · {arrow}"
+        self.log_widget.write(note)
+        self.sub_title = f"compare — {tag_a} vs {tag_b}"
+        self._render_table()
+
     def _render_table(self) -> None:
         """Clear and re-add rows from _all_rows, applying the filter if active."""
         self.table.clear()
@@ -597,6 +690,7 @@ class BrewCheckerTUI(App):
 
     def _switch_to_view(self, view: str) -> None:
         self.selected.clear()
+        self._compare_path = None  # compare mode is backup-view-only
         self._clear_filter()
         self.sub_title = self._VIEW_SUBTITLES[view]
         self._configure_columns()
@@ -709,6 +803,32 @@ class BrewCheckerTUI(App):
         if path is None:
             return  # cancelled
         self.backup_path = path
+        self._compare_path = None  # loading a fresh backup exits compare mode
+        self.refresh_bindings()
+        await self.refresh_state()
+
+    def action_compare(self) -> None:
+        if self.view != "backup":
+            return
+        if not self.backup_path:
+            self.notify("Load a backup first (l), then compare another against it.",
+                        severity="warning")
+            return
+        self._pick_compare()
+
+    @work(exclusive=True)
+    async def _pick_compare(self) -> None:
+        entries = await asyncio.to_thread(core.list_backups)
+        entries = [e for e in entries if e[0] != self.backup_path]  # exclude loaded
+        if not entries:
+            self.notify("No other saved backups to compare against.", severity="warning")
+            return
+        path = await self.push_screen_wait(
+            BackupPickerScreen(entries, title="Compare against…"))
+        if path is None:
+            return  # cancelled
+        self._compare_path = path
+        self.refresh_bindings()  # hide U — nothing is installable while comparing
         await self.refresh_state()
 
     def action_export(self) -> None:
@@ -728,6 +848,8 @@ class BrewCheckerTUI(App):
             self.log_widget.write(f"[red]export failed: {exc}[/]")
             return
         self.backup_path = path
+        self._compare_path = None  # showing the fresh snapshot, not a comparison
+        self.refresh_bindings()
         if created:
             self.log_widget.write(f"[green]saved[/] new snapshot → [b]{path}[/]")
         else:

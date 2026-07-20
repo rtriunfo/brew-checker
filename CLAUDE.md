@@ -24,7 +24,12 @@ Two files, deliberately split:
   missing, 0 when clean. Also hosts the read-only **backup** engine
   (`build_backup`/`write_backup`/`load_backup`/`diff_backup`, plus
   `installed_formulae`/`installed_taps` and `owned_apps`/`untracked_apps`) and
-  the `--export`/`--snapshot`/`--diff` CLI actions. A snapshot (schema 2) records taps,
+  the `--export`/`--snapshot`/`--diff`/`--diff-snapshots` CLI actions.
+  `diff_snapshots(a, b)` is the pure snapshot-to-snapshot diff (neither side is
+  the live machine — `{kind: (only_in_a, only_in_b)}`, apps only when both record
+  them); `report_snapshot_diff(before, after)` prints it chronologically
+  (ADDED = in after, REMOVED = in before) for the `--diff-snapshots BEFORE AFTER`
+  CLI action. A snapshot (schema 2) records taps,
   formulae, casks, **and** `apps` — the untracked `.app` bundles on disk
   (`untracked_apps()` = `present_apps() − owned_apps()`), a read-only *log* only:
   brew can't install/remove them, so `diff_backup`/`report_diff` surface app
@@ -95,6 +100,15 @@ total. Dropped tokens are returned as "uninspectable" rather than vanishing.
   `brew install --formula/--cask` the selection); `e` (`action_export` →
   `_do_export`, a worker) saves a snapshot via `core.store_snapshot` (deduped
   against the latest same-host backup) off the UI thread and loads the result.
+  `c` (`action_compare` → `_pick_compare`, a worker) enters a **compare sub-mode**:
+  it picks a second snapshot (via the same `BackupPickerScreen`, loaded file
+  excluded) and sets `_compare_path`, so `_refresh_backup` renders
+  `core.diff_snapshots` via `_populate_compare` instead of the backup-vs-machine
+  diff — showing **only differences** as chronological ADDED/REMOVED (ordered by
+  `meta.date`, neutral "only loaded/picked" labels when dates are missing). All
+  compare rows are info-only (key `None`); the `_comparing` property gates the
+  footer (hides `U`). Compare mode is cleared on view switch, on loading a fresh
+  backup (`l`), and on export (`e`).
 - Row keys are prefixed (e.g. `missing:`, `untracked:`) so `_selected(prefix)`
   can filter selections; `check_action` gates which key bindings show per view.
 - **State-changing brew commands run in a suspended terminal**, not in the log

@@ -229,6 +229,25 @@ def diff_backup(backup):
     return result
 
 
+def diff_snapshots(a, b):
+    """Compare two backup dicts against each other (neither is the live machine).
+
+    Returns {kind: (only_in_a, only_in_b)} for kind in taps/formulae/casks — each
+    a sorted list of items present in one snapshot but not the other. "apps" is
+    included ONLY when both dicts record apps (schema-2): a schema-1 file has no
+    apps list, so pairing it against a schema-2 file would wrongly report all of
+    the latter's apps as differences — better to omit apps entirely there.
+    """
+    result = {}
+    for kind in ("taps", "formulae", "casks"):
+        sa, sb = set(a.get(kind, [])), set(b.get(kind, []))
+        result[kind] = (sorted(sa - sb), sorted(sb - sa))
+    if "apps" in a and "apps" in b:
+        sa, sb = set(a["apps"]), set(b["apps"])
+        result["apps"] = (sorted(sa - sb), sorted(sb - sa))
+    return result
+
+
 def _parse_apps(cask):
     apps = []
     for art in cask.get("artifacts", []):
@@ -326,6 +345,9 @@ def parse_args():
                         "(exit 0 = unchanged, 10 = new backup written)")
     p.add_argument("--diff", metavar="FILE",
                    help="show what a backup FILE has that this machine doesn't (and vice versa)")
+    p.add_argument("--diff-snapshots", nargs=2, metavar=("BEFORE", "AFTER"),
+                   help="show what changed (ADDED/REMOVED) from one snapshot file "
+                        "to another (chronological baseline → target)")
     args = p.parse_args()
     # Default (no flag) = show everything.
     if not (args.missing or args.untracked):
@@ -369,6 +391,39 @@ def report_diff(backup):
     return any_missing
 
 
+def report_snapshot_diff(before, after):
+    """Print the diff between two snapshots. Returns True if anything differs.
+
+    Framed chronologically: `before` is the baseline, `after` the target.
+    ADDED = in `after` but not `before`; REMOVED = in `before` but not `after`.
+    Apps are shown only when both snapshots record them (see diff_snapshots).
+    """
+    def tag(b):
+        m = b.get("meta", {})
+        return f"{m.get('host', '?')} · {m.get('date', '?')}"
+
+    print(f"{BOLD}Snapshot diff{RESET}  {DIM}({tag(before)}  →  {tag(after)}){RESET}\n")
+    diff = diff_snapshots(before, after)
+    changed = False
+    for kind in ("taps", "formulae", "casks", "apps"):
+        if kind not in diff:
+            continue  # apps absent from a schema-1 snapshot
+        removed, added = diff[kind]
+        changed = changed or bool(removed or added)
+        print(f"{BOLD}{GREEN}ADDED {kind} — in {tag(after)}, not before "
+              f"({len(added)}){RESET}")
+        for name in added:
+            print(f"  {GREEN}+{RESET} {name}")
+        print(f"{BOLD}{RED}REMOVED {kind} — in {tag(before)}, not after "
+              f"({len(removed)}){RESET}")
+        for name in removed:
+            print(f"  {RED}-{RESET} {name}")
+        print()
+    if not changed:
+        print(f"{GREEN}snapshots are identical{RESET}")
+    return changed
+
+
 def main(args):
     # Backup / diff modes short-circuit the reconcile report.
     if args.export is not None:
@@ -392,6 +447,10 @@ def main(args):
     if args.diff is not None:
         log("Diffing backup against this machine…")
         sys.exit(1 if report_diff(load_backup(args.diff)) else 0)
+    if args.diff_snapshots is not None:
+        log("Diffing two snapshots…")
+        before, after = (load_backup(p) for p in args.diff_snapshots)
+        sys.exit(1 if report_snapshot_diff(before, after) else 0)
 
     # "Focused" mode = user asked for exactly one section; drop the header/footers
     # so the output is just that list.
