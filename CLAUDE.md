@@ -63,6 +63,14 @@ parses the offending token(s) out of stderr, drops them, and retries the rest �
 so one bad cask can't blank the report and it stays at ~a couple of brew calls
 total. Dropped tokens are returned as "uninspectable" rather than vanishing.
 
+The UNTRACKED list (and its `apps` record in a snapshot) is deliberately never
+filtered by an ignore-list, even though the same handful of App Store / Setapp
+apps show up on every run. It's kept complete on purpose: a snapshot doubles as
+a full reference of everything that was on the machine, which is exactly what
+you'd want to reconstruct app inventory on a new Mac — brew can't install those
+apps, but you still want to know they existed. Don't add ignore/allowlist
+filtering to `untracked_apps()`/`present_apps()`.
+
 ### TUI structure
 
 - Four views switched with `1`–`4` or cycled with `v` (`_VIEWS`): **Reconcile**
@@ -108,7 +116,40 @@ total. Dropped tokens are returned as "uninspectable" rather than vanishing.
   `meta.date`, neutral "only loaded/picked" labels when dates are missing). All
   compare rows are info-only (key `None`); the `_comparing` property gates the
   footer (hides `U`). Compare mode is cleared on view switch, on loading a fresh
-  backup (`l`), and on export (`e`).
+  backup (`l`), and on export (`e`). `h` (`action_history`) enters a similar
+  **history sub-mode** (`_history_mode`, mutually exclusive with compare):
+  `_refresh_backup` calls `compute_history()`, which loads every snapshot in
+  `core.list_backups()` (sorted oldest-first by `meta.date`) and pairs each with
+  `core.diff_snapshots(prev, cur)` against the one before it (`None` for the
+  first/baseline), then `_populate_history` renders one info-only row per
+  snapshot — date, host, item counts, and a compact delta (e.g. `+2c -1f`) versus
+  the previous snapshot. `_comparing` (despite the name) also covers history
+  mode for the purposes of hiding `U` in the footer, since neither sub-mode has
+  anything installable. History mode is cleared the same places compare mode is
+  (view switch, `l`, `e`) plus on entering compare mode, and vice versa.
+  Timeline rows are keyed `hist:<idx>` (an index into the cached
+  `_history_rows`, not an install target — `action_toggle_select` ignores this
+  prefix) so Enter (`DataTable.RowSelected` → `on_data_table_row_selected`) can
+  **drill into one step's actual item-level diff**: `_history_drill` records
+  which index is drilled into, and `_populate_history_detail` re-renders that
+  one step's already-computed delta as ADDED/REMOVED rows, same styling as
+  `_populate_compare` (the earliest/baseline snapshot, whose `delta` is `None`,
+  is instead framed as its whole inventory being "added"). Pressing `h` again
+  while drilled in steps back to the cached timeline (`_populate_history`)
+  without recomputing — `action_history` is a toggle, not a re-fetch, whenever
+  a drill is active. Both the drill-in (`_populate_history_detail`) and a
+  lighter always-on preview (`_render_history_preview`) share one helper,
+  `_history_step_delta(idx)`, that returns `(delta, prev_tag, tag)` for a step
+  (synthesizing the baseline case once, not twice). The preview fires from
+  `on_data_table_row_highlighted` — `DataTable`'s built-in row-cursor event,
+  posted on every arrow-key move — and writes the highlighted step's
+  added/removed item names straight into the log panel. This is the one place
+  in the app that calls `log_widget.clear()`: everywhere else `log_widget` is
+  an append-only action log (scan/command output), but a preview that fires on
+  every arrow press must replace its own content instead of spamming, so the
+  clear is tightly guarded to `view == "backup" and _history_mode and
+  _history_drill is None` (the timeline overview only — never during compare
+  mode, a drilled-in detail, or any other view).
 - Row keys are prefixed (e.g. `missing:`, `untracked:`) so `_selected(prefix)`
   can filter selections; `check_action` gates which key bindings show per view.
 - **State-changing brew commands run in a suspended terminal**, not in the log

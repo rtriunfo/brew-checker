@@ -348,6 +348,10 @@ def parse_args():
     p.add_argument("--diff-snapshots", nargs=2, metavar=("BEFORE", "AFTER"),
                    help="show what changed (ADDED/REMOVED) from one snapshot file "
                         "to another (chronological baseline → target)")
+    p.add_argument("--json", action="store_true",
+                   help="emit JSON instead of text (applies to any report mode; "
+                        "-m/-u are ignored — the JSON always includes everything, "
+                        "filter it downstream with jq)")
     args = p.parse_args()
     # Default (no flag) = show everything.
     if not (args.missing or args.untracked):
@@ -355,17 +359,32 @@ def parse_args():
     return args
 
 
-def report_diff(backup):
-    """Print the backup ⇄ machine diff. Returns True if anything is missing."""
+def report_diff(backup, as_json=False):
+    """Print (or, if as_json, emit as JSON) the backup ⇄ machine diff.
+
+    Returns True if anything is missing.
+    """
     meta = backup.get("meta", {})
     tag = f"{meta.get('host', '?')} · {meta.get('date', '?')}"
-    print(f"{BOLD}Backup ⇄ this machine{RESET}  {DIM}(backup: {tag}){RESET}\n")
     diff = diff_backup(backup)
-    any_missing = False
+    any_missing = any(diff[kind][0] for kind in ("taps", "formulae", "casks"))
+
+    if as_json:
+        out = {"backup": tag}
+        for kind in ("taps", "formulae", "casks"):
+            missing, extra = diff[kind]
+            out[kind] = {"missing": missing, "extra": extra}
+        if "apps" in backup:
+            app_missing, _ = diff["apps"]
+            out["apps"] = {"missing": app_missing}
+        json.dump(out, sys.stdout, indent=2)
+        print()
+        return any_missing
+
+    print(f"{BOLD}Backup ⇄ this machine{RESET}  {DIM}(backup: {tag}){RESET}\n")
     labels = {"taps": "taps", "formulae": "formulae", "casks": "casks"}
     for kind in ("taps", "formulae", "casks"):
         missing, extra = diff[kind]
-        any_missing = any_missing or bool(missing)
         print(f"{BOLD}{RED}MISSING {labels[kind]} — in backup, not installed here "
               f"({len(missing)}){RESET}")
         for name in missing:
@@ -391,25 +410,37 @@ def report_diff(backup):
     return any_missing
 
 
-def report_snapshot_diff(before, after):
-    """Print the diff between two snapshots. Returns True if anything differs.
+def report_snapshot_diff(before, after, as_json=False):
+    """Print (or, if as_json, emit as JSON) the diff between two snapshots.
 
-    Framed chronologically: `before` is the baseline, `after` the target.
-    ADDED = in `after` but not `before`; REMOVED = in `before` but not `after`.
-    Apps are shown only when both snapshots record them (see diff_snapshots).
+    Returns True if anything differs. Framed chronologically: `before` is the
+    baseline, `after` the target. ADDED = in `after` but not `before`; REMOVED =
+    in `before` but not `after`. Apps are shown only when both snapshots record
+    them (see diff_snapshots).
     """
     def tag(b):
         m = b.get("meta", {})
         return f"{m.get('host', '?')} · {m.get('date', '?')}"
 
-    print(f"{BOLD}Snapshot diff{RESET}  {DIM}({tag(before)}  →  {tag(after)}){RESET}\n")
     diff = diff_snapshots(before, after)
-    changed = False
+    changed = any(diff[kind][0] or diff[kind][1] for kind in diff)
+
+    if as_json:
+        out = {"before": tag(before), "after": tag(after)}
+        for kind in ("taps", "formulae", "casks", "apps"):
+            if kind not in diff:
+                continue
+            removed, added = diff[kind]
+            out[kind] = {"added": added, "removed": removed}
+        json.dump(out, sys.stdout, indent=2)
+        print()
+        return changed
+
+    print(f"{BOLD}Snapshot diff{RESET}  {DIM}({tag(before)}  →  {tag(after)}){RESET}\n")
     for kind in ("taps", "formulae", "casks", "apps"):
         if kind not in diff:
             continue  # apps absent from a schema-1 snapshot
         removed, added = diff[kind]
-        changed = changed or bool(removed or added)
         print(f"{BOLD}{GREEN}ADDED {kind} — in {tag(after)}, not before "
               f"({len(added)}){RESET}")
         for name in added:
@@ -446,11 +477,11 @@ def main(args):
         sys.exit(0)
     if args.diff is not None:
         log("Diffing backup against this machine…")
-        sys.exit(1 if report_diff(load_backup(args.diff)) else 0)
+        sys.exit(1 if report_diff(load_backup(args.diff), as_json=args.json) else 0)
     if args.diff_snapshots is not None:
         log("Diffing two snapshots…")
         before, after = (load_backup(p) for p in args.diff_snapshots)
-        sys.exit(1 if report_snapshot_diff(before, after) else 0)
+        sys.exit(1 if report_snapshot_diff(before, after, as_json=args.json) else 0)
 
     # "Focused" mode = user asked for exactly one section; drop the header/footers
     # so the output is just that list.
@@ -481,6 +512,18 @@ def main(args):
     untracked = sorted(present_apps() - owned_apps)
 
     # ---- report ----
+    if args.json:
+        out = {
+            "casks_installed": len(tokens),
+            "missing": [{"token": t, "apps": gone} for t, gone in sorted(missing)],
+            "untracked": untracked,
+            "no_app_casks": len(no_app_casks),
+            "uninspectable": unknown,
+        }
+        json.dump(out, sys.stdout, indent=2)
+        print()
+        sys.exit(1 if missing else 0)
+
     if not focused:
         print(f"{BOLD}Homebrew cask ⇄ Applications reconciliation{RESET}")
         print(f"{DIM}{len(tokens)} casks installed · checking {', '.join(APP_DIRS)}{RESET}\n")

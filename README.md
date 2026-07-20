@@ -45,6 +45,19 @@ Progress messages print to **stderr**, so they stay visible on screen without
 polluting a redirected report. The exit code is `1` when anything is missing and
 `0` when clean — handy for automation.
 
+Pass `--json` to any report mode (reconcile, `--diff`, `--diff-snapshots`) to get
+structured output instead of colored text — handy for piping into `jq`, a
+dashboard, or a notifier:
+
+```sh
+brew-checker --json                          # {"casks_installed", "missing", "untracked", "no_app_casks", "uninspectable"}
+brew-checker --diff backup.json --json       # {"backup", "taps", "formulae", "casks", "apps"}, each {"missing", "extra"}
+brew-checker --diff-snapshots old.json new.json --json  # {"before", "after", "taps", "formulae", "casks", "apps"}, each {"added", "removed"}
+```
+
+`-m`/`-u` are ignored under `--json` — the JSON always includes everything;
+filter it downstream with `jq`. Exit codes are unchanged.
+
 ## Backup & restore
 
 Snapshot everything you've explicitly installed so it can be recreated on another
@@ -109,6 +122,18 @@ showing **only the differences**, framed chronologically as **ADDED** / **REMOVE
 (older → newer). These rows are informational only — comparing two snapshots
 installs nothing. Load a backup again (`l`) or switch views to return to the normal
 backup-vs-machine view.
+
+Press `h` to browse the **whole store as a timeline**: every saved snapshot,
+oldest to newest, one row per snapshot with its tap/formula/cask/app counts and
+the delta from the previous snapshot (e.g. `+2c -1f`). It's a quick way to see
+how your setup has grown or shrunk over time without picking snapshots two at a
+time. Just arrowing **up/down** live-previews the highlighted snapshot's actual
+added/removed item names in the log panel on the right, so you can scan through
+history without pressing anything else. Press **Enter** on a snapshot instead
+to drill into a full-width ADDED/REMOVED table for that one step — the same
+view `c` (compare) shows, useful when the item list is long; press `h` again to
+go back to the timeline. These rows are informational only; load a backup
+(`l`), compare (`c`), or switch views to leave history mode entirely.
 
 ### Automating snapshots (cron + git)
 
@@ -257,6 +282,7 @@ The TUI has four views, switched with `1`–`4` or cycled with `v`:
 | `U`     | backup    | install selected MISSING items (`brew install`, tapping first) |
 | `l`     | backup    | open the picker to load a saved backup                    |
 | `c`     | backup    | compare the loaded backup against another saved snapshot  |
+| `h`     | backup    | browse the whole store as a chronological timeline        |
 | `e`     | backup    | save a snapshot into the store (deduped by same-host)   |
 
 The footer only shows the keys relevant to the active view.

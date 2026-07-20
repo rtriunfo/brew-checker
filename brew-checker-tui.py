@@ -117,6 +117,37 @@ def compute_compare(path_a, path_b):
     return a.get("meta", {}), b.get("meta", {}), a, b, core.diff_snapshots(a, b)
 
 
+def _snapshot_sort_key(entry):
+    """Sort key for a core.list_backups() entry: parsed meta.date, oldest first.
+
+    Falls back to the file's mtime (list_backups is already newest-mtime-first,
+    so reversing its order is a reasonable fallback) when the date is missing or
+    unparseable.
+    """
+    path, meta, *_ = entry
+    try:
+        return (0, datetime.datetime.fromisoformat(meta.get("date", "")))
+    except (TypeError, ValueError):
+        return (1, os.path.getmtime(path))
+
+
+def compute_history():
+    """Load every stored snapshot, oldest first, each paired with its diff from
+    the previous one. Returns [(meta, backup, delta_or_None), …] where delta is
+    core.diff_snapshots(prev, cur) — None for the first (baseline) entry.
+    Blocking.
+    """
+    entries = sorted(core.list_backups(), key=_snapshot_sort_key)
+    rows = []
+    prev_backup = None
+    for path, *_ in entries:
+        backup = core.load_backup(path)
+        delta = core.diff_snapshots(prev_backup, backup) if prev_backup is not None else None
+        rows.append((backup.get("meta", {}), backup, delta))
+        prev_backup = backup
+    return rows
+
+
 class ConfirmScreen(ModalScreen[bool]):
     """Yes/No modal that lists the exact commands about to run."""
 
@@ -278,6 +309,7 @@ class BrewCheckerTUI(App):
         Binding("g", "toggle_greedy", "Greedy"),
         Binding("l", "load", "Load"),
         Binding("c", "compare", "Compare"),
+        Binding("h", "history", "History"),
         Binding("e", "export", "Export"),
         Binding("f5", "rescan", "Rescan"),
         Binding("q", "quit", "Quit"),
@@ -301,6 +333,9 @@ class BrewCheckerTUI(App):
         self.greedy = False                 # include auto-updating casks in outdated
         self.backup_path = backup_path      # backup file for the restore view (or None)
         self._compare_path: str | None = None  # 2nd snapshot to compare against (or None)
+        self._history_mode: bool = False    # browsing the whole store chronologically
+        self._history_rows: list | None = None  # cached compute_history() result
+        self._history_drill: int | None = None  # index into _history_rows drilled into, or None
         self._missing: list = []
         self._untracked: list = []
         self._unknown: list = []
@@ -327,8 +362,10 @@ class BrewCheckerTUI(App):
 
     @property
     def _comparing(self) -> bool:
-        """True when the backup view is showing a snapshot-to-snapshot diff."""
-        return self.view == "backup" and self._compare_path is not None
+        """True when the backup view is showing a snapshot-to-snapshot diff or
+        the whole-store history — neither has anything installable."""
+        return self.view == "backup" and (self._compare_path is not None
+                                           or self._history_mode)
 
     async def on_mount(self) -> None:
         self._configure_columns()
@@ -345,7 +382,7 @@ class BrewCheckerTUI(App):
             return None  # nothing is installable while comparing two snapshots
         if action == "toggle_greedy" and self.view != "casks":
             return None  # greedy is a cask-only concept
-        if action in ("export", "load", "compare") and self.view != "backup":
+        if action in ("export", "load", "compare", "history") and self.view != "backup":
             return None  # backup store actions only belong in the backup view
         return True
 
@@ -405,7 +442,20 @@ class BrewCheckerTUI(App):
 
     async def _refresh_backup(self) -> None:
         self.table.clear()
-        if self._comparing:
+        if self._history_mode:
+            self.log_widget.write("[dim]loading snapshot history…[/]")
+            try:
+                rows = await asyncio.to_thread(compute_history)
+            except SystemExit as exc:  # load_backup raises this on bad/missing files
+                self._history_mode = False
+                self.log_widget.write(f"[red]{exc}[/]")
+                self.sub_title = "backup — history failed"
+                return
+            self._history_rows = rows
+            self._history_drill = None
+            self._populate_history(rows)
+            return
+        if self._compare_path is not None:
             self.log_widget.write("[dim]comparing snapshots…[/]")
             try:
                 meta_a, meta_b, a, b, diff = await asyncio.to_thread(
@@ -624,6 +674,116 @@ class BrewCheckerTUI(App):
         self.sub_title = f"compare — {tag_a} vs {tag_b}"
         self._render_table()
 
+    def _populate_history(self, rows) -> None:
+        """Show every stored snapshot chronologically, with per-snapshot counts
+        and the delta from the previous one. `rows` is the output of
+        compute_history(): [(meta, backup, delta_or_None), …], oldest first.
+        Rows are keyed `hist:<idx>` (not INSTALLED/MISSING/EXTRA-selectable —
+        see the action_toggle_select guard) so Enter can drill into that step's
+        item-level diff via on_data_table_row_selected/_populate_history_detail.
+        """
+        self._all_rows = []
+        for idx, (meta, backup, delta) in enumerate(rows):
+            counts = {kind: len(backup.get(kind, [])) for kind in
+                      ("taps", "formulae", "casks", "apps")}
+            summary = (f"{counts['taps']}t {counts['formulae']}f "
+                       f"{counts['casks']}c {counts['apps']}a")
+            if delta is not None:
+                deltas = []
+                for kind, short in (("taps", "t"), ("formulae", "f"),
+                                    ("casks", "c"), ("apps", "a")):
+                    if kind not in delta:
+                        continue  # absent when either side is schema-1
+                    removed, added = delta[kind]
+                    if added:
+                        deltas.append(f"[green]+{len(added)}{short}[/]")
+                    if removed:
+                        deltas.append(f"[red]-{len(removed)}{short}[/]")
+                if deltas:
+                    summary += "  " + " ".join(deltas)
+            tag = self._snapshot_tag(meta)
+            host = meta.get("host", "?")
+            self._all_rows.append(
+                (f"hist:{idx}", ("", f"[dim]{tag}[/]", host, summary), f"{tag} {host} {summary}"))
+
+        self.sub_title = f"backup — history ({len(rows)} snapshots)"
+        self._render_table()
+        if rows:
+            self._render_history_preview(0)
+        else:
+            self.log_widget.write("[yellow]no saved backups yet[/]")
+
+    def _history_step_delta(self, idx: int) -> tuple[dict, str, str]:
+        """Return (delta, prev_tag, tag) for history step `idx`: the diff of
+        that snapshot against the one before it (already computed by
+        compute_history()), synthesizing a baseline delta (whole inventory as
+        "added") when `idx` is the earliest saved snapshot (delta is None)."""
+        meta, backup, delta = self._history_rows[idx]
+        if delta is None:
+            delta = {kind: ([], backup.get(kind, [])) for kind in
+                     ("taps", "formulae", "casks", "apps")}
+            prev_tag = "(earliest saved snapshot)"
+        else:
+            prev_tag = self._snapshot_tag(self._history_rows[idx - 1][0])
+        return delta, prev_tag, self._snapshot_tag(meta)
+
+    def _render_history_preview(self, idx: int) -> None:
+        """Live preview of one history step's item-level changes in the log
+        panel, replacing its content (not appending) as the cursor moves —
+        only used while browsing the history timeline overview."""
+        delta, prev_tag, tag = self._history_step_delta(idx)
+        lines = [f"[b]{tag}[/]", f"[dim]{prev_tag}[/] → [dim]{tag}[/]", ""]
+        n_added = n_removed = 0
+        for kind in ("taps", "formulae", "casks", "apps"):
+            if kind not in delta:
+                continue
+            removed, added = delta[kind]
+            singular = kind[:-1]
+            for name in added:
+                n_added += 1
+                lines.append(f"  [green]+[/] {singular}: {name}")
+            for name in removed:
+                n_removed += 1
+                lines.append(f"  [red]-[/] {singular}: {name}")
+        if not (n_added or n_removed):
+            lines.append("[dim]no changes[/]")
+        lines += ["", f"[dim]{len(self._history_rows)} snapshot(s) · ↑/↓ to preview · "
+                      "Enter to drill in[/]"]
+        self.log_widget.clear()
+        self.log_widget.write("\n".join(lines))
+
+    def _populate_history_detail(self, idx: int) -> None:
+        """Show the item-level ADDED/REMOVED diff for one history step (the
+        snapshot at `idx` vs. the one before it), reusing the delta already
+        computed by compute_history(). Every row is info-only (key None) —
+        drilling into a step installs nothing."""
+        delta, prev_tag, tag = self._history_step_delta(idx)
+
+        self._all_rows = []
+        n_added = n_removed = 0
+        for kind in ("taps", "formulae", "casks", "apps"):
+            if kind not in delta:
+                continue
+            removed, added = delta[kind]
+            singular = kind[:-1]
+            for name in added:
+                n_added += 1
+                self._all_rows.append((None, ("", "[green]ADDED[/]", singular, f"[dim]{name}[/]"),
+                                       f"{name} {singular} added"))
+            for name in removed:
+                n_removed += 1
+                self._all_rows.append((None, ("", "[red]REMOVED[/]", singular, f"[dim]{name}[/]"),
+                                       f"{name} {singular} removed"))
+
+        arrow = f"[dim]{prev_tag}[/]  →  [dim]{tag}[/]"
+        if n_added or n_removed:
+            note = f"[green]{n_added} added[/] · [red]{n_removed} removed[/] · {arrow}"
+        else:
+            note = f"[dim]no changes[/] · {arrow}"
+        self.log_widget.write(note + "\n[dim]press h to return to the timeline[/]")
+        self.sub_title = f"backup — history detail — {tag}"
+        self._render_table()
+
     def _render_table(self) -> None:
         """Clear and re-add rows from _all_rows, applying the filter if active."""
         self.table.clear()
@@ -646,8 +806,8 @@ class BrewCheckerTUI(App):
 
     def action_toggle_select(self) -> None:
         key = self._current_key()
-        if key is None:
-            return
+        if key is None or key.startswith("hist:"):
+            return  # history rows aren't selectable — Enter drills in instead
         if key in self.selected:
             self.selected.remove(key)
             self.table.update_cell(key, "sel", "")
@@ -690,7 +850,9 @@ class BrewCheckerTUI(App):
 
     def _switch_to_view(self, view: str) -> None:
         self.selected.clear()
-        self._compare_path = None  # compare mode is backup-view-only
+        self._compare_path = None   # compare mode is backup-view-only
+        self._history_mode = False  # history mode is backup-view-only
+        self._history_drill = None
         self._clear_filter()
         self.sub_title = self._VIEW_SUBTITLES[view]
         self._configure_columns()
@@ -804,6 +966,8 @@ class BrewCheckerTUI(App):
             return  # cancelled
         self.backup_path = path
         self._compare_path = None  # loading a fresh backup exits compare mode
+        self._history_mode = False
+        self._history_drill = None
         self.refresh_bindings()
         await self.refresh_state()
 
@@ -828,8 +992,44 @@ class BrewCheckerTUI(App):
         if path is None:
             return  # cancelled
         self._compare_path = path
+        self._history_mode = False  # compare and history modes are mutually exclusive
+        self._history_drill = None
         self.refresh_bindings()  # hide U — nothing is installable while comparing
         await self.refresh_state()
+
+    def action_history(self) -> None:
+        if self.view != "backup":
+            return
+        if self._history_mode and self._history_drill is not None:
+            # already drilled into one step's diff — step back to the timeline,
+            # reusing the cached rows rather than re-hitting disk.
+            self._history_drill = None
+            self._populate_history(self._history_rows)
+            return
+        self._compare_path = None  # history and compare modes are mutually exclusive
+        self._history_mode = True
+        self.refresh_bindings()  # hide U — nothing is installable while browsing history
+        self.run_worker(self.refresh_state(), exclusive=True)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Enter on a history-timeline row drills into that step's item diff."""
+        if not (self.view == "backup" and self._history_mode and self._history_drill is None):
+            return
+        key = event.row_key.value
+        if not key or not key.startswith("hist:"):
+            return
+        self._history_drill = int(key.split(":", 1)[1])
+        self._populate_history_detail(self._history_drill)
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Arrow-key navigation on the history timeline live-previews that
+        step's changes in the log panel — no Enter needed."""
+        if not (self.view == "backup" and self._history_mode and self._history_drill is None):
+            return
+        key = event.row_key.value
+        if not key or not key.startswith("hist:"):
+            return
+        self._render_history_preview(int(key.split(":", 1)[1]))
 
     def action_export(self) -> None:
         if self.view != "backup":
@@ -849,6 +1049,8 @@ class BrewCheckerTUI(App):
             return
         self.backup_path = path
         self._compare_path = None  # showing the fresh snapshot, not a comparison
+        self._history_mode = False
+        self._history_drill = None
         self.refresh_bindings()
         if created:
             self.log_widget.write(f"[green]saved[/] new snapshot → [b]{path}[/]")
