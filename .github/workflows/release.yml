@@ -95,10 +95,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          cat > /tmp/release-notes.md <<EOF
+          ## Install
+
+          \`\`\`sh
+          brew install rtriunfo/brew-checker/brew-checker
+          \`\`\`
+
+          ## Assets
+
+          - **brew-checker.py** — the CLI, stdlib-only. Also installable by hand:
+            \`ln -sf brew-checker.py ~/.local/bin/brew-checker\`.
+          - **brew-checker-tui** — the interactive Textual companion, prebuilt as a
+            single self-contained executable (shiv). Needs only \`python3\`.
+
+          EOF
           gh release create "${{ steps.bump.outputs.new_tag }}" \
             brew-checker.py \
             dist/brew-checker-tui \
             --title "${{ steps.bump.outputs.new_tag }}" \
+            --notes-file /tmp/release-notes.md \
             --generate-notes
 
       - name: Render and push tap formula
