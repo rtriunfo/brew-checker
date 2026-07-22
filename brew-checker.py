@@ -20,6 +20,8 @@ import socket
 import subprocess
 import sys
 
+VERSION = "0.1.0"
+
 APP_DIRS = ["/Applications", os.path.expanduser("~/Applications")]
 
 # ANSI colours (skipped when stdout isn't a TTY)
@@ -331,6 +333,8 @@ def parse_args():
         description="Reconcile installed Homebrew casks against the Applications folders.",
         epilog="With no flag, both sections are shown. Pass a flag to show only that one.",
     )
+    p.add_argument("--version", action="version", version=f"brew-checker {VERSION}",
+                   help="show version and exit")
     p.add_argument("-m", "--missing", action="store_true",
                    help="show only casks whose .app is missing from disk")
     p.add_argument("-u", "--untracked", action="store_true",

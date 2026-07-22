@@ -1178,6 +1178,9 @@ class BrewCheckerTUI(App):
 
 
 def main() -> None:
+    if "--version" in sys.argv:
+        print(f"brew-checker-tui {core.VERSION}")
+        return
     # Optional positional arg: a backup file to load in the backup/restore view.
     backup_path = sys.argv[1] if len(sys.argv) > 1 else None
     BrewCheckerTUI(backup_path).run()

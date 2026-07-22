@@ -31,6 +31,7 @@ brew-checker            # full report (both sections)
 brew-checker -m         # --missing:   only casks whose .app is gone
 brew-checker -u         # --untracked: only apps with no owning cask
 brew-checker --help     # usage
+brew-checker --version  # print the installed version
 ```
 
 With no flag, both sections are shown. Pass a single flag for a focused list
@@ -181,7 +182,18 @@ gh repo create brew-checker-backups --private --source=. --remote=origin --push
 Both come with Apple's Command Line Tools, so any Mac that can run brew already
 has everything this needs. There are no dependencies to manage.
 
-## Install (run from anywhere)
+## Install via Homebrew
+
+```sh
+brew install rtriunfo/brew-checker/brew-checker
+```
+
+(equivalent to `brew tap rtriunfo/brew-checker` then `brew install brew-checker`).
+This installs both `brew-checker` (the CLI) and `brew-checker-tui` (the
+prebuilt interactive companion, see below) onto your `PATH` — nothing further
+to set up.
+
+### Manual install (from source)
 
 The script is symlinked onto your `PATH` so `brew-checker` works from any
 directory. It's a symlink, so edits to the source file take effect immediately —
@@ -296,7 +308,11 @@ these commands appears in the terminal rather than the side log pane.
 The plain `brew-checker.py` remains fully standalone and dependency-free — the
 TUI is purely additive.
 
-### Single-file executable (no dependencies to manage)
+### Single-file executable (build it yourself)
+
+`brew install rtriunfo/brew-checker/brew-checker` already gives you a prebuilt
+`brew-checker-tui` binary — this section is for building one yourself (source
+installs, or hacking on the TUI).
 
 > **Why not Docker?** This tool has to run natively on macOS — it drives your
 > host's `brew` and modifies `/Applications`. A Docker container runs Linux and
@@ -330,3 +346,12 @@ source and rebuild rather than checking the binary in.
    cask and retries the rest — so it stays fast, ~a couple of brew calls total).
 3. Checks each expected `.app` against the Applications folders → **MISSING**.
 4. Lists every `.app` on disk that no cask owns → **UNTRACKED**.
+
+## Releasing (maintainer)
+
+Releases are cut from the "Release" GitHub Actions workflow (Actions tab →
+Release → Run workflow), picking a `patch`/`minor`/`major` bump. It computes
+the next semver tag, bumps `VERSION` in `brew-checker.py`, builds
+`dist/brew-checker-tui`, publishes a GitHub Release with both as assets, and
+pushes an updated formula to the `rtriunfo/homebrew-brew-checker` tap. There's
+nothing to do locally — no manual tagging or building.

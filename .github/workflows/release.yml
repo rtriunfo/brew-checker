@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: bump
+        run: |
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            # First-ever release is always v0.1.0, regardless of chosen bump.
+            new_version="0.1.0"
+          else
+            ver="${latest#v}"
+            IFS=. read -r major minor patch <<< "$ver"
+            case "${{ inputs.bump }}" in
+              major) major=$((major+1)); minor=0; patch=0 ;;
+              minor) minor=$((minor+1)); patch=0 ;;
+              patch) patch=$((patch+1)) ;;
+            esac
+            new_version="${major}.${minor}.${patch}"
+          fi
+          new_tag="v${new_version}"
+          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "new_tag=$new_tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $new_tag"
+
+      - name: Bump VERSION in brew-checker.py
+        run: |
+          python3 -c "
+          import re, pathlib
+          p = pathlib.Path('brew-checker.py')
+          text = p.read_text()
+          new_text = re.sub(r'^VERSION = \".*\"', 'VERSION = \"${{ steps.bump.outputs.new_version }}\"', text, count=1, flags=re.M)
+          assert new_text != text, 'VERSION line not found/updated'
+          p.write_text(new_text)
+          "
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add brew-checker.py
+          git commit -m "Bump version to ${{ steps.bump.outputs.new_version }}"
+          git push origin HEAD:main
+
+      - name: Tag release
+        run: |
+          git tag "${{ steps.bump.outputs.new_tag }}"
+          git push origin "${{ steps.bump.outputs.new_tag }}"
+
+      # dist/ is git-ignored and never persists between releases, so the TUI
+      # binary must be rebuilt on every release regardless of whether
+      # brew-checker-tui.py's own source changed since the last tag — its
+      # baked-in core.VERSION must match this release. Don't skip this.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Build TUI binary
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements-dev.txt
+          ./build-tui.sh
+
+      - name: Compute checksums
+        id: sha
+        run: |
+          cli_sha=$(shasum -a 256 brew-checker.py | cut -d' ' -f1)
+          tui_sha=$(shasum -a 256 dist/brew-checker-tui | cut -d' ' -f1)
+          echo "cli_sha=$cli_sha" >> "$GITHUB_OUTPUT"
+          echo "tui_sha=$tui_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.bump.outputs.new_tag }}" \
+            brew-checker.py \
+            dist/brew-checker-tui \
+            --title "${{ steps.bump.outputs.new_tag }}" \
+            --generate-notes
+
+      - name: Render and push tap formula
+        env:
+          TAP_REPO_TOKEN: ${{ secrets.TAP_REPO_TOKEN }}
+        run: |
+          python3 scripts/render_formula.py \
+            --version "${{ steps.bump.outputs.new_version }}" \
+            --cli-sha "${{ steps.sha.outputs.cli_sha }}" \
+            --tui-sha "${{ steps.sha.outputs.tui_sha }}" \
+            --out /tmp/brew-checker.rb
+
+          git clone "https://x-access-token:${TAP_REPO_TOKEN}@github.com/rtriunfo/homebrew-brew-checker.git" /tmp/tap
+          mkdir -p /tmp/tap/Formula
+          cp /tmp/brew-checker.rb /tmp/tap/Formula/brew-checker.rb
+
+          cd /tmp/tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/brew-checker.rb
+          git diff --cached --quiet || git commit -m "brew-checker ${{ steps.bump.outputs.new_tag }}"
+          git push origin main
