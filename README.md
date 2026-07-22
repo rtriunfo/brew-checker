@@ -10,6 +10,18 @@ could be brought under brew's management.
 
 **Read-only.** It only reports; it never installs, removes, or modifies anything.
 
+## Quick start
+
+```sh
+brew install rtriunfo/brew-checker/brew-checker   # installs brew-checker + brew-checker-tui
+brew-checker                                      # run the report
+brew-checker-tui                                  # or launch the interactive TUI
+```
+
+That's it — no config, no venv, no dependencies to manage. See
+[Install via Homebrew](#install-via-homebrew) below for alternatives (building
+from source, or the manual symlink install).
+
 ## What it reports
 
 - **MISSING** — a cask is installed (brew thinks so) but its `.app` is gone from
