@@ -408,9 +408,12 @@ class BrewCheckerTUI(App):
             self.table.add_column("name", key="name", width=30)
             self.table.add_column("detail", key="detail")
         elif self.view == "backup":
-            self.table.add_column("status", key="status", width=10)
-            self.table.add_column("kind", key="kind", width=10)
-            self.table.add_column("name", key="name")
+            self.table.add_column("date" if self._history_mode else "status", key="status", width=10)
+            # In history mode "name"/"kind" hold host/summary instead of an item's
+            # name/type, so the width that fits short content flips too — the long
+            # delta summary needs the unrestricted column, not the fixed-width one.
+            self.table.add_column("name", key="name", width=22 if self._history_mode else None)
+            self.table.add_column("kind", key="kind", width=None if self._history_mode else 10)
         else:
             self.table.add_column("cask" if self.view == "casks" else "formula",
                                   key="name", width=28)
@@ -441,13 +444,14 @@ class BrewCheckerTUI(App):
             self.table.loading = False
 
     async def _refresh_backup(self) -> None:
-        self.table.clear()
+        self._configure_columns()  # header (date vs. status) depends on _history_mode
         if self._history_mode:
             self.log_widget.write("[dim]loading snapshot history…[/]")
             try:
                 rows = await asyncio.to_thread(compute_history)
             except SystemExit as exc:  # load_backup raises this on bad/missing files
                 self._history_mode = False
+                self._configure_columns()
                 self.log_widget.write(f"[red]{exc}[/]")
                 self.sub_title = "backup — history failed"
                 return
@@ -570,19 +574,19 @@ class BrewCheckerTUI(App):
                 if kind in prefixes:
                     key = f"{prefixes[kind]}:{name}"
                     self._all_rows.append((key, (self._mark(key), "[red]MISSING[/]",
-                                       singular, name), f"{name} {singular} missing"))
+                                       name, singular), f"{name} {singular} missing"))
                 else:  # taps: shown for context, auto-added on restore
-                    self._all_rows.append((None, ("", "[red]MISSING[/]", "tap", f"[dim]{name}[/]"),
+                    self._all_rows.append((None, ("", "[red]MISSING[/]", f"[dim]{name}[/]", "tap"),
                                            f"{name} tap missing"))
             for name in backup.get(kind, []):
                 if name in missing_set:
                     continue
                 n_installed += 1
-                self._all_rows.append((None, ("", "[green]INSTALLED[/]", singular, f"[dim]{name}[/]"),
+                self._all_rows.append((None, ("", "[green]INSTALLED[/]", f"[dim]{name}[/]", singular),
                                        f"{name} {singular} installed"))
             for name in extra:
                 n_extra += 1
-                self._all_rows.append((None, ("", "[yellow]EXTRA[/]", singular, f"[dim]{name}[/]"),
+                self._all_rows.append((None, ("", "[yellow]EXTRA[/]", f"[dim]{name}[/]", singular),
                                        f"{name} {singular} extra"))
         # Untracked apps: a read-only log. Rows are never selectable (key None),
         # and "gone" apps don't count toward "to install" — they can't be. There's
@@ -595,13 +599,13 @@ class BrewCheckerTUI(App):
             app_missing_set = set(app_missing)
             for name in app_missing:  # gone first
                 n_apps_gone += 1
-                self._all_rows.append((None, ("", "[red]MISSING[/]", "app", f"[dim]{name}[/]"),
+                self._all_rows.append((None, ("", "[red]MISSING[/]", f"[dim]{name}[/]", "app"),
                                        f"{name} app missing gone"))
             for name in backup.get("apps", []):  # recorded and still present
                 if name in app_missing_set:
                     continue
                 n_apps_here += 1
-                self._all_rows.append((None, ("", "[green]INSTALLED[/]", "app", f"[dim]{name}[/]"),
+                self._all_rows.append((None, ("", "[green]INSTALLED[/]", f"[dim]{name}[/]", "app"),
                                        f"{name} app installed"))
 
         tag = f"{meta.get('host', '?')} · {meta.get('date', '?')}"
@@ -615,8 +619,17 @@ class BrewCheckerTUI(App):
         self._render_table()
 
     @staticmethod
+    def _format_date(date_str) -> str:
+        """Render a snapshot's stored isoformat() timestamp as a compact,
+        human-scannable date instead of the raw ISO string."""
+        try:
+            return datetime.datetime.fromisoformat(date_str).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            return date_str or "?"
+
+    @staticmethod
     def _snapshot_tag(meta) -> str:
-        return f"{meta.get('host', '?')} · {meta.get('date', '?')}"
+        return f"{meta.get('host', '?')} · {BrewCheckerTUI._format_date(meta.get('date', '?'))}"
 
     def _populate_compare(self, meta_a, meta_b, a, b, diff) -> None:
         """Show only the differences between two snapshots (neither is the machine).
@@ -653,11 +666,11 @@ class BrewCheckerTUI(App):
             singular = kind[:-1]
             for name in added:
                 n_added += 1
-                self._all_rows.append((None, ("", added_label, singular, f"[dim]{name}[/]"),
+                self._all_rows.append((None, ("", added_label, f"[dim]{name}[/]", singular),
                                        f"{name} {singular} added"))
             for name in removed:
                 n_removed += 1
-                self._all_rows.append((None, ("", removed_label, singular, f"[dim]{name}[/]"),
+                self._all_rows.append((None, ("", removed_label, f"[dim]{name}[/]", singular),
                                        f"{name} {singular} removed"))
 
         tag_a, tag_b = self._snapshot_tag(meta_a), self._snapshot_tag(meta_b)
@@ -703,8 +716,9 @@ class BrewCheckerTUI(App):
                     summary += "  " + " ".join(deltas)
             tag = self._snapshot_tag(meta)
             host = meta.get("host", "?")
+            date = self._format_date(meta.get("date", "?"))
             self._all_rows.append(
-                (f"hist:{idx}", ("", f"[dim]{tag}[/]", host, summary), f"{tag} {host} {summary}"))
+                (f"hist:{idx}", ("", f"[dim]{date}[/]", host, summary), f"{tag} {host} {summary}"))
 
         self.sub_title = f"backup — history ({len(rows)} snapshots)"
         self._render_table()
@@ -768,11 +782,11 @@ class BrewCheckerTUI(App):
             singular = kind[:-1]
             for name in added:
                 n_added += 1
-                self._all_rows.append((None, ("", "[green]ADDED[/]", singular, f"[dim]{name}[/]"),
+                self._all_rows.append((None, ("", "[green]ADDED[/]", f"[dim]{name}[/]", singular),
                                        f"{name} {singular} added"))
             for name in removed:
                 n_removed += 1
-                self._all_rows.append((None, ("", "[red]REMOVED[/]", singular, f"[dim]{name}[/]"),
+                self._all_rows.append((None, ("", "[red]REMOVED[/]", f"[dim]{name}[/]", singular),
                                        f"{name} {singular} removed"))
 
         arrow = f"[dim]{prev_tag}[/]  →  [dim]{tag}[/]"
