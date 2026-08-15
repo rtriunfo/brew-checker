@@ -11,6 +11,7 @@ Skips cleanly when `textual` isn't installed, so the plain
 """
 
 import importlib.util
+import json
 import os
 import pathlib
 import shutil
@@ -64,6 +65,46 @@ class TUIBoundaryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing, [("misscask", ["MissingGame.app"])])
         self.assertEqual(untracked, ["UntrackedApp.app"])
         self.assertEqual(unknown, ["untrustedcask"])
+
+    def test_compute_upgrades_casks_all_up_to_date(self):
+        # Fake brew reports no outdated casks, so every row is "up to date".
+        rows = self.tui.compute_upgrades("cask")
+        self.assertEqual(len(rows), len(fakebrew.CASKS))
+        names = {r[0] for r in rows}
+        self.assertEqual(names, set(fakebrew.CASKS))
+        for row in rows:
+            self.assertFalse(row[3], f"{row[0]} should not be outdated")
+
+    async def test_pilot_export_snapshot_in_backup_view(self):
+        """Exporting from the backup view writes a snapshot through the engine."""
+        app = self.tui.BrewCheckerTUI()
+        async with app.run_test(size=(110, 30)) as pilot:
+            for _ in range(30):
+                await pilot.pause()
+                if app.table.loading is False:
+                    break
+
+            app.action_goto_view("backup")
+            for _ in range(30):
+                await pilot.pause()
+                if app.view == "backup" and app.table.loading is False:
+                    break
+            self.assertEqual(app.view, "backup")
+
+            app.action_export()  # _do_export is a @work
+            for _ in range(50):
+                await pilot.pause()
+                if app.backup_path is not None:
+                    break
+
+            self.assertIsNotNone(app.backup_path)
+            backup_dir = os.path.join(self.tmp, ".brew-checker", "backups")
+            self.assertEqual(
+                len([f for f in os.listdir(backup_dir) if f.endswith(".json")]), 1)
+            with open(app.backup_path) as fh:
+                data = json.load(fh)
+            self.assertEqual(sorted(data["casks"]), sorted(fakebrew.CASKS))
+            self.assertEqual(data["apps"], ["UntrackedApp.app"])
 
     async def test_pilot_renders_reconcile_view(self):
         app = self.tui.BrewCheckerTUI()
