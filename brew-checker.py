@@ -24,13 +24,31 @@ VERSION = "0.1.1"
 
 APP_DIRS = ["/Applications", os.path.expanduser("~/Applications")]
 
-# ANSI colours (skipped when stdout isn't a TTY)
-if sys.stdout.isatty():
-    RED, GREEN, YELLOW, DIM, BOLD, RESET = (
-        "\033[31m", "\033[32m", "\033[33m", "\033[2m", "\033[1m", "\033[0m",
-    )
-else:
-    RED = GREEN = YELLOW = DIM = BOLD = RESET = ""
+
+class BrewCheckerError(Exception):
+    """Raised for user-facing input/data errors (a bad/missing backup, ...).
+
+    The engine raises this instead of printing to stdout or exiting, so callers
+    (CLI and TUI) decide how to surface it. The CLI turns it into a clean error
+    message + non-zero exit; the TUI shows it in its log pane.
+    """
+
+
+# ANSI colours (skipped when stdout isn't a TTY). Resolved lazily so that
+# *importing* the module has no side effects — the CLI sets these at the top of
+# main(); the TUI never needs them.
+RED = GREEN = YELLOW = DIM = BOLD = RESET = ""
+
+
+def _set_colours(stream):
+    """Configure the ANSI colour globals for a given output stream."""
+    global RED, GREEN, YELLOW, DIM, BOLD, RESET
+    if stream.isatty():
+        RED, GREEN, YELLOW, DIM, BOLD, RESET = (
+            "\033[31m", "\033[32m", "\033[33m", "\033[2m", "\033[1m", "\033[0m",
+        )
+    else:
+        RED = GREEN = YELLOW = DIM = BOLD = RESET = ""
 
 
 def log(msg, end="\n"):
@@ -181,29 +199,36 @@ def build_backup():
     }
 
 
-def write_backup(obj, path=None):
-    """Write a backup as JSON to `path`, or to stdout when path is None/'-'."""
-    text = json.dumps(obj, indent=2)
-    if path in (None, "-"):
-        print(text)
-    else:
-        parent = os.path.dirname(path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        with open(path, "w") as f:
-            f.write(text + "\n")
+def backup_json(obj):
+    """Return a backup/snapshot dict serialized as indented JSON text."""
+    return json.dumps(obj, indent=2)
+
+
+def write_backup(obj, path):
+    """Write a backup as JSON to `path` (creating any parent dirs).
+
+    Never writes to stdout — if a caller wants the bytes on stdout it should use
+    `backup_json` and print itself. Keeping this function side-effect-free lets
+    the TUI and scripts call it without worrying about stdout corruption.
+    """
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w") as f:
+        f.write(backup_json(obj) + "\n")
 
 
 def load_backup(path):
-    """Read and validate a backup file. Exits with a clear message on bad input."""
+    """Read and validate a backup file. Raises BrewCheckerError on bad input."""
     try:
         with open(path) as f:
             obj = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        raise SystemExit(f"cannot read backup {path}: {e}")
+        raise BrewCheckerError(f"cannot read backup {path}: {e}")
     if not isinstance(obj, dict) or "formulae" not in obj or "casks" not in obj:
-        raise SystemExit(f"{path} doesn't look like a brew-checker backup "
-                         "(missing 'formulae'/'casks').")
+        raise BrewCheckerError(
+            f"{path} doesn't look like a brew-checker backup "
+            "(missing 'formulae'/'casks').")
     return obj
 
 
@@ -275,19 +300,15 @@ def cask_apps(tokens):
     # total instead of one per cask.
     remaining, unknown = list(tokens), []
     while remaining:
-        log(f"  querying {len(remaining)} casks via brew… ", end="")
         bulk = run(["brew", "info", "--cask", "--json=v2", *remaining], check=False)
         if bulk.returncode == 0:
-            log("ok")
             data = json.loads(bulk.stdout)
             return {c["token"]: _parse_apps(c) for c in data["casks"]}, unknown
 
         # Figure out which cask brew refused, drop it, and retry the rest in bulk.
         bad = [t for t in remaining if t in bulk.stderr]
         if not bad:
-            log("failed (unrecognised error)")
             return {}, remaining  # can't isolate the culprit — give up on the batch
-        log(f"skipping {', '.join(bad)}")
         unknown += bad
         remaining = [t for t in remaining if t not in bad]
 
@@ -307,25 +328,51 @@ def app_exists(app):
     return any(os.path.exists(os.path.join(d, app)) for d in APP_DIRS)
 
 
-def owned_apps(tokens=None):
-    """Set of every .app basename an installed cask is responsible for.
+def reconcile(tokens=None):
+    """Reconcile installed casks against the Applications folders.
 
-    Uses the same bulk `brew info` path as the reconcile report; tokens brew
-    can't inspect are skipped (their apps just won't count as owned).
+    This is the single home of the detection algorithm, shared by the CLI and
+    the TUI (which must not re-derive it). Returns a dict with:
+      casks_installed : number of casks considered,
+      missing         : [(token, [gone app, …]), …] — cask installed, app not on disk
+      untracked       : sorted `.app` basenames with no owning cask,
+      no_app_casks    : tokens that install no `.app` (fonts/CLIs/drivers),
+      uninspectable   : tokens brew couldn't read (e.g. untrusted tap),
+      owned_apps      : every `.app` basename an inspected cask is responsible for.
     """
-    if tokens is None:
-        tokens = installed_casks()
+    tokens = list(tokens) if tokens is not None else installed_casks()
     mapping, unknown = cask_apps(tokens)
-    owned = set()
+    missing, owned, no_app_casks = [], set(), []
     for token in tokens:
-        if token not in unknown:
-            owned.update(mapping.get(token, []))
-    return owned
+        if token in unknown:
+            continue
+        apps = mapping.get(token, [])
+        if not apps:
+            no_app_casks.append(token)
+            continue
+        owned.update(apps)
+        gone = [a for a in apps if not app_exists(a)]
+        if gone:
+            missing.append((token, gone))
+    missing.sort()
+    return {
+        "casks_installed": len(tokens),
+        "missing": missing,
+        "untracked": sorted(present_apps() - owned),
+        "no_app_casks": no_app_casks,
+        "uninspectable": unknown,
+        "owned_apps": owned,
+    }
+
+
+def owned_apps(tokens=None):
+    """Set of every .app basename an installed cask is responsible for."""
+    return reconcile(tokens)["owned_apps"]
 
 
 def untracked_apps():
     """Sorted .app basenames on disk that no installed cask owns (a log only)."""
-    return sorted(present_apps() - owned_apps())
+    return reconcile()["untracked"]
 
 
 def parse_args():
@@ -460,11 +507,18 @@ def report_snapshot_diff(before, after, as_json=False):
 
 
 def main(args):
+    # The CLI's report functions need the colour codes for *its* stdout stream;
+    # resolve them here (lazily) so importing the module has no side effects.
+    _set_colours(sys.stdout)
+
     # Backup / diff modes short-circuit the reconcile report.
     if args.export is not None:
         log("Building backup…")
-        write_backup(build_backup(), args.export)
-        if args.export not in (None, "-"):
+        backup = build_backup()
+        if args.export in (None, "-"):
+            print(backup_json(backup))
+        else:
+            write_backup(backup, args.export)
             log(f"  wrote {args.export}")
         sys.exit(0)
     if args.snapshot:
@@ -492,34 +546,20 @@ def main(args):
     focused = args.missing ^ args.untracked
 
     log("Listing installed casks…")
-    tokens = installed_casks()
-    log(f"  {len(tokens)} casks installed")
-    mapping, unknown = cask_apps(tokens)
+    result = reconcile()
+    n_casks = result["casks_installed"]
+    missing = result["missing"]
+    untracked = result["untracked"]
+    no_app_casks = result["no_app_casks"]
+    unknown = result["uninspectable"]
+    log(f"  {n_casks} casks installed")
     log("Scanning Applications folders…")
-
-    missing = []          # (token, [missing apps])
-    owned_apps = set()    # every .app any installed cask is responsible for
-    no_app_casks = []     # casks that install no .app (fonts, CLIs, drivers…)
-
-    for token in tokens:
-        if token in unknown:
-            continue
-        apps = mapping.get(token, [])
-        if not apps:
-            no_app_casks.append(token)
-            continue
-        owned_apps.update(apps)
-        gone = [a for a in apps if not app_exists(a)]
-        if gone:
-            missing.append((token, gone))
-
-    untracked = sorted(present_apps() - owned_apps)
 
     # ---- report ----
     if args.json:
         out = {
-            "casks_installed": len(tokens),
-            "missing": [{"token": t, "apps": gone} for t, gone in sorted(missing)],
+            "casks_installed": n_casks,
+            "missing": [{"token": t, "apps": gone} for t, gone in missing],
             "untracked": untracked,
             "no_app_casks": len(no_app_casks),
             "uninspectable": unknown,
@@ -530,7 +570,7 @@ def main(args):
 
     if not focused:
         print(f"{BOLD}Homebrew cask ⇄ Applications reconciliation{RESET}")
-        print(f"{DIM}{len(tokens)} casks installed · checking {', '.join(APP_DIRS)}{RESET}\n")
+        print(f"{DIM}{n_casks} casks installed · checking {', '.join(APP_DIRS)}{RESET}\n")
 
     if args.missing:
         print(f"{BOLD}{RED}MISSING — cask installed but app not on disk ({len(missing)}){RESET}")
@@ -571,4 +611,7 @@ if __name__ == "__main__":
         main(parse_args())
     except subprocess.CalledProcessError as e:
         print(f"error running: {' '.join(e.cmd)}\n{e.stderr}", file=sys.stderr)
+        sys.exit(2)
+    except BrewCheckerError as e:
+        print(f"error: {e}", file=sys.stderr)
         sys.exit(2)

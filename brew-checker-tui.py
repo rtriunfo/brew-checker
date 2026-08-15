@@ -46,22 +46,13 @@ STDOUT = asyncio.subprocess.STDOUT
 
 
 def compute_state():
-    """Run the engine and return (missing, untracked, unknown). Blocking."""
-    tokens = core.installed_casks()
-    mapping, unknown = core.cask_apps(tokens)
-    missing, owned = [], set()
-    for token in tokens:
-        if token in unknown:
-            continue
-        apps = mapping.get(token, [])
-        if not apps:
-            continue
-        owned.update(apps)
-        gone = [a for a in apps if not core.app_exists(a)]
-        if gone:
-            missing.append((token, gone))
-    untracked = sorted(core.present_apps() - owned)
-    return sorted(missing), untracked, unknown
+    """Run the engine and return (missing, untracked, unknown). Blocking.
+
+    Delegates entirely to the engine's single reconcile() — the TUI must not
+    re-derive the detection algorithm.
+    """
+    result = core.reconcile()
+    return result["missing"], result["untracked"], result["uninspectable"]
 
 
 def compute_upgrades(kind="cask", greedy=False):
@@ -449,7 +440,7 @@ class BrewCheckerTUI(App):
             self.log_widget.write("[dim]loading snapshot history…[/]")
             try:
                 rows = await asyncio.to_thread(compute_history)
-            except SystemExit as exc:  # load_backup raises this on bad/missing files
+            except core.BrewCheckerError as exc:  # load_backup raises this on bad/missing files
                 self._history_mode = False
                 self._configure_columns()
                 self.log_widget.write(f"[red]{exc}[/]")
@@ -464,7 +455,7 @@ class BrewCheckerTUI(App):
             try:
                 meta_a, meta_b, a, b, diff = await asyncio.to_thread(
                     compute_compare, self.backup_path, self._compare_path)
-            except SystemExit as exc:  # load_backup raises this on bad/missing files
+            except core.BrewCheckerError as exc:  # load_backup raises this on bad/missing files
                 self._compare_path = None
                 self.log_widget.write(f"[red]{exc}[/]")
                 self.sub_title = "backup — compare failed"
@@ -487,7 +478,7 @@ class BrewCheckerTUI(App):
         self.log_widget.write(f"[dim]loading backup {self.backup_path}…[/]")
         try:
             meta, backup, diff = await asyncio.to_thread(compute_backup_diff, self.backup_path)
-        except SystemExit as exc:  # load_backup raises this on bad/missing files
+        except core.BrewCheckerError as exc:  # load_backup raises this on bad/missing files
             self._backup_diff = None
             self.log_widget.write(f"[red]{exc}[/]")
             self.sub_title = "backup — load failed"

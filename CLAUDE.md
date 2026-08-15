@@ -176,10 +176,19 @@ python3 -m venv .venv
 # Build the single-file executable (bundles textual via shiv)
 .venv/bin/pip install -r requirements-dev.txt   # one-time: build tooling
 ./build-tui.sh                                    # -> dist/brew-checker-tui
+
+# Run the engine's test suite (stdlib unittest, no brew/textual needed)
+python3 -m unittest discover -s tests -t .
 ```
 
-There is no test suite, linter, or CI configured. `dist/` is git-ignored — commit
-source and rebuild, never check in the binary.
+The engine's pure logic (`reconcile`, the snapshot/diff functions, backup I/O) lives
+in `brew-checker.py` and is covered by a stdlib `unittest` suite in `tests/`
+(`test_engine.py`). It mocks the `subprocess`/filesystem boundaries, so it runs on
+any machine with Python 3 — no brew, no textual required. The detection algorithm
+has a single home: `reconcile()` in the engine, which both `main()` (CLI) and the
+TUI's `compute_state()` call; don't re-derive it elsewhere. There is no linter or
+CI configured. `dist/` is git-ignored — build the source and rebuild, never check
+in the binary.
 
 **Always rebuild `dist/brew-checker-tui` after changing the TUI.** The user tests
 against that bundled binary, so a source edit that isn't rebuilt won't show up
