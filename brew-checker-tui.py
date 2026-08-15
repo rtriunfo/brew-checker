@@ -358,6 +358,17 @@ class BrewCheckerTUI(App):
         return self.view == "backup" and (self._compare_path is not None
                                            or self._history_mode)
 
+    def _reset_backup_mode(self) -> None:
+        """Clear all backup sub-mode state at once (compare / history / drill).
+
+        Every site that exits a backup sub-mode goes through this single method
+        so the three flags can't be reset out of order and leave the footer (and
+        the `U` key) inconsistent with the mode actually being shown.
+        """
+        self._compare_path = None
+        self._history_mode = False
+        self._history_drill = None
+
     async def on_mount(self) -> None:
         self._configure_columns()
         self.log_widget.write("[dim]1[/]=casks  [dim]2[/]=formulae  [dim]3[/]=reconcile  [dim]4[/]=backup  "
@@ -855,9 +866,7 @@ class BrewCheckerTUI(App):
 
     def _switch_to_view(self, view: str) -> None:
         self.selected.clear()
-        self._compare_path = None   # compare mode is backup-view-only
-        self._history_mode = False  # history mode is backup-view-only
-        self._history_drill = None
+        self._reset_backup_mode()  # compare/history are backup-view-only
         self._clear_filter()
         self.sub_title = self._VIEW_SUBTITLES[view]
         self._configure_columns()
@@ -970,9 +979,7 @@ class BrewCheckerTUI(App):
         if path is None:
             return  # cancelled
         self.backup_path = path
-        self._compare_path = None  # loading a fresh backup exits compare mode
-        self._history_mode = False
-        self._history_drill = None
+        self._reset_backup_mode()  # loading a fresh backup exits comparison modes
         self.refresh_bindings()
         await self.refresh_state()
 
@@ -996,9 +1003,8 @@ class BrewCheckerTUI(App):
             BackupPickerScreen(entries, title="Compare against…"))
         if path is None:
             return  # cancelled
+        self._reset_backup_mode()  # compare & history modes are mutually exclusive
         self._compare_path = path
-        self._history_mode = False  # compare and history modes are mutually exclusive
-        self._history_drill = None
         self.refresh_bindings()  # hide U — nothing is installable while comparing
         await self.refresh_state()
 
@@ -1011,7 +1017,7 @@ class BrewCheckerTUI(App):
             self._history_drill = None
             self._populate_history(self._history_rows)
             return
-        self._compare_path = None  # history and compare modes are mutually exclusive
+        self._reset_backup_mode()  # history and compare modes are mutually exclusive
         self._history_mode = True
         self.refresh_bindings()  # hide U — nothing is installable while browsing history
         self.run_worker(self.refresh_state(), exclusive=True)
@@ -1053,9 +1059,7 @@ class BrewCheckerTUI(App):
             self.log_widget.write(f"[red]export failed: {exc}[/]")
             return
         self.backup_path = path
-        self._compare_path = None  # showing the fresh snapshot, not a comparison
-        self._history_mode = False
-        self._history_drill = None
+        self._reset_backup_mode()  # showing the fresh snapshot, not a comparison
         self.refresh_bindings()
         if created:
             self.log_widget.write(f"[green]saved[/] new snapshot → [b]{path}[/]")
