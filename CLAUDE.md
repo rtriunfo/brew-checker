@@ -182,13 +182,22 @@ python3 -m unittest discover -s tests -t .
 ```
 
 The engine's pure logic (`reconcile`, the snapshot/diff functions, backup I/O) lives
-in `brew-checker.py` and is covered by a stdlib `unittest` suite in `tests/`
-(`test_engine.py`). It mocks the `subprocess`/filesystem boundaries, so it runs on
-any machine with Python 3 — no brew, no textual required. The detection algorithm
-has a single home: `reconcile()` in the engine, which both `main()` (CLI) and the
-TUI's `compute_state()` call; don't re-derive it elsewhere. There is no linter or
-CI configured. `dist/` is git-ignored — build the source and rebuild, never check
-in the binary.
+in `brew-checker.py`. The stdlib `unittest` suite in `tests/` covers it at three
+levels and needs neither a real Homebrew install nor (mostly) `textual`:
+
+- `tests/test_engine.py` — unit tests that mock the `subprocess`/filesystem
+  boundaries. Runs with plain `python3`.
+- `tests/test_cli.py` — hermetic end-to-end tests that run the real `brew-checker.py`
+  as a subprocess against a fake `brew` shim on PATH and a controlled app-dir/home
+  (`tests/fakebrew.py`). Runs with plain `python3`.
+- `tests/test_tui.py` — headless Textual Pilot session driving the real TUI app.
+  Auto-skips when `textual` isn't installed (i.e. a plain-`python3` run); run it
+  with `.venv/bin/python` to include these.
+
+The detection algorithm has a single home: `reconcile()` in the engine, which both
+`main()` (CLI) and the TUI's `compute_state()` call; don't re-derive it elsewhere.
+There is no linter or CI configured. `dist/` is git-ignored — build the source and
+rebuild, never check in the binary.
 
 **Always rebuild `dist/brew-checker-tui` after changing the TUI.** The user tests
 against that bundled binary, so a source edit that isn't rebuilt won't show up
