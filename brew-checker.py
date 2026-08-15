@@ -22,7 +22,21 @@ import sys
 
 VERSION = "0.1.1"
 
-APP_DIRS = ["/Applications", os.path.expanduser("~/Applications")]
+# Which directories count as the "Applications" folders to scan. Overridable via
+# BREW_CHECKER_APP_DIRS (colon-separated) so the CLI can be exercised hermetic in
+# tests / scripts without touching the real /Applications — unset behaves exactly
+# as before.
+_DEFAULT_APP_DIRS = ["/Applications", os.path.expanduser("~/Applications")]
+
+
+def _resolve_app_dirs():
+    raw = os.environ.get("BREW_CHECKER_APP_DIRS")
+    if raw:
+        return [p for p in raw.split(":") if p]
+    return list(_DEFAULT_APP_DIRS)
+
+
+APP_DIRS = _resolve_app_dirs()
 
 
 class BrewCheckerError(Exception):
