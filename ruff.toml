@@ -1,0 +1,9 @@
+# Lint the project against its oldest supported Python (MIN_PYTHON in
+# brew-checker.py). Deliberately narrow: syntax errors, pyflakes, and FA102
+# (PEP 604/585 annotations without `from __future__ import annotations`).
+# Note ruff can't see a 3.10-only `X | None` evaluated at runtime (e.g. in a
+# class base) — the 3.9 job in .github/workflows/test.yml is what catches that.
+target-version = "py39"
+
+[lint]
+select = ["E9", "F", "FA"]

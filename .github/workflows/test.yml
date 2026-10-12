@@ -1,0 +1,51 @@
+name: Tests
+
+# Runs on every push/PR, and is called by release.yml so nothing ships untested.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: unittest (Python ${{ matrix.python }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # "3.9" is the floor (MIN_PYTHON in brew-checker.py) — stock macOS's
+        # python3, which the binaries run on outside Homebrew. "3.15" is the
+        # interpreter the Homebrew formula pins (python@3.15).
+        python: ["3.9", "3.15"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # textual is installed so the headless TUI tests run rather than skip:
+      # importing the TUI module is what fails on a too-new syntax feature.
+      - name: Install TUI dependency
+        run: python -m pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -t . -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Ruff
+        run: |
+          python -m pip install ruff
+          ruff check .

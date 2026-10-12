@@ -2,3 +2,4 @@
 #   .venv/bin/pip install -r requirements-dev.txt
 # Then build the single-file executable:  ./build-tui.sh
 shiv>=1.0
+ruff>=0.15

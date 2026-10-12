@@ -6,6 +6,30 @@ the `VERSION` constant in `brew-checker.py`.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-12
+
+Guard rails so a Python-version slip like the 0.2.0 fix can't ship again.
+
+### Changed
+
+- **Homebrew formula pins its interpreter.** It now `depends_on "python@3.15"`
+  and installs both programs under `libexec`, with `bin/` wrappers that run
+  them on that Python — no longer on whatever `python3` is first on `PATH`.
+- **Clear error on too-old Python.** The CLI and TUI exit with
+  `needs Python 3.9 or newer (this is X)` instead of a traceback. 3.9 is the
+  declared floor (`MIN_PYTHON`).
+
+### Added
+
+- **CI** (`.github/workflows/test.yml`): the full suite, including the
+  headless TUI tests, on Python 3.9 (the floor) and 3.15 (the formula's) for
+  every push/PR, plus `ruff check` (`ruff.toml`, targeting py39).
+- **Release gating** (`release.yml`): runs that test workflow first, then
+  smoke-tests the built `brew-checker.py` and `brew-checker-tui` on both
+  Pythons *before* the version bump is committed, tagged or published.
+- `PythonFloorTest` keeps the floor in sync across the engine, TUI,
+  `ruff.toml` and the CI matrix, and the formula's Python in the matrix.
+
 ## [0.2.0] - 2026-10-12
 
 ### Fixed

@@ -189,7 +189,10 @@ gh repo create brew-checker-backups --private --source=. --remote=origin --push
 ## Requirements
 
 - **Homebrew** — the tool inspects your actual installed casks.
-- **Python 3** — standard library only, no `pip install`, no virtualenv.
+- **Python 3.9 or newer** — standard library only, no `pip install`, no
+  virtualenv. The Homebrew install brings and pins its own Python
+  (`python@3.15`); run by hand, the scripts use whatever `python3` is on
+  `PATH` and exit with a clear message if it's older than 3.9.
 
 Both come with Apple's Command Line Tools, so any Mac that can run brew already
 has everything this needs. There are no dependencies to manage.

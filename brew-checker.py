@@ -20,6 +20,14 @@ import socket
 import subprocess
 import sys
 
+# Oldest Python we support: stock macOS's `python3` (Command Line Tools) is 3.9.
+# Kept in sync with _MIN_PYTHON in brew-checker-tui.py, ruff.toml's
+# target-version and the oldest Python in .github/workflows/test.yml.
+MIN_PYTHON = (3, 9)
+if sys.version_info < MIN_PYTHON:
+    sys.exit("brew-checker needs Python %d.%d or newer (this is %s)"
+             % (MIN_PYTHON + (sys.version.split()[0],)))
+
 VERSION = "0.2.0"
 
 # Which directories count as the "Applications" folders to scan. Overridable via

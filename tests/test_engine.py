@@ -13,6 +13,7 @@ import itertools
 import json
 import os
 import pathlib
+import re
 import shutil
 import tempfile
 import unittest
@@ -211,3 +212,30 @@ class SnapshotsMatchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PythonFloorTest(unittest.TestCase):
+    """The supported-Python floor is declared in a few places; keep them in step."""
+
+    def test_tui_floor_matches_engine(self):
+        tui = (_HERE / "brew-checker-tui.py").read_text()
+        floor = "_MIN_PYTHON = (%d, %d)" % core.MIN_PYTHON
+        self.assertIn(floor, tui)
+
+    def test_ruff_targets_the_floor(self):
+        ruff = (_HERE / "ruff.toml").read_text()
+        self.assertIn('target-version = "py%d%d"' % core.MIN_PYTHON, ruff)
+
+    def test_ci_tests_the_floor_and_the_formula_python(self):
+        workflow = (_HERE / ".github" / "workflows" / "test.yml").read_text()
+        self.assertIn('"%d.%d"' % core.MIN_PYTHON, workflow)
+        formula = (_HERE / "homebrew" / "brew-checker.rb.tmpl").read_text()
+        pinned = re.search(r'depends_on "python@([\d.]+)"', formula).group(1)
+        self.assertIn('"%s"' % pinned, workflow)
+
+    def test_guard_rejects_older_python(self):
+        with mock.patch("sys.version_info", (3, 8, 18)), \
+                mock.patch("sys.version", "3.8.18 (default)"):
+            with self.assertRaises(SystemExit) as cm:
+                _spec.loader.exec_module(importlib.util.module_from_spec(_spec))
+        self.assertEqual(str(cm.exception),
+                         "brew-checker needs Python 3.9 or newer (this is 3.8.18)")

@@ -26,6 +26,14 @@ import subprocess
 import sys
 from typing import Optional
 
+# Checked before importing textual so an old interpreter gets a clear message,
+# not a traceback from deep inside a dependency. Same floor as the engine's
+# MIN_PYTHON (which can't be read yet — the engine is loaded below).
+_MIN_PYTHON = (3, 9)
+if sys.version_info < _MIN_PYTHON:
+    sys.exit("brew-checker-tui needs Python %d.%d or newer (this is %s)"
+             % (_MIN_PYTHON + (sys.version.split()[0],)))
+
 from textual import work
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding

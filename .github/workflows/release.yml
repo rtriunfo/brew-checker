@@ -14,7 +14,11 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
   release:
+    needs: test
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -55,6 +59,47 @@ jobs:
           p.write_text(new_text)
           "
 
+      # dist/ is git-ignored and never persists between releases, so the TUI
+      # binary must be rebuilt on every release regardless of whether
+      # brew-checker-tui.py's own source changed since the last tag — its
+      # baked-in core.VERSION must match this release. Don't skip this.
+      # Python the Homebrew formula pins (depends_on "python@X.Y"), read from
+      # the template so the smoke test below can't drift from what users run.
+      - name: Read formula Python
+        id: pyver
+        run: |
+          v=$(sed -nE 's/^ *depends_on "python@([0-9.]+)".*/\1/p' homebrew/brew-checker.rb.tmpl)
+          test -n "$v"
+          echo "formula=$v" >> "$GITHUB_OUTPUT"
+
+      # The last listed version is the default `python3` (used for the build);
+      # 3.9 is the floor (MIN_PYTHON) — stock macOS's python3.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: |
+            3.9
+            ${{ steps.pyver.outputs.formula }}
+
+      - name: Build TUI binary
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements-dev.txt
+          ./build-tui.sh
+
+      # Run the built artifacts on both interpreters they'll meet in the wild
+      # before anything is committed, tagged or published. `--version` imports
+      # the whole TUI module, so a too-new syntax feature, or a bundled
+      # dependency that dropped the floor version, fails the release here.
+      - name: Smoke-test binaries
+        run: |
+          want="${{ steps.bump.outputs.new_version }}"
+          for py in python3.9 "python${{ steps.pyver.outputs.formula }}"; do
+            echo "== $py ($("$py" --version))"
+            test "$("$py" brew-checker.py --version)" = "brew-checker $want"
+            test "$("$py" dist/brew-checker-tui --version)" = "brew-checker-tui $want"
+          done
+
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
@@ -67,21 +112,6 @@ jobs:
         run: |
           git tag "${{ steps.bump.outputs.new_tag }}"
           git push origin "${{ steps.bump.outputs.new_tag }}"
-
-      # dist/ is git-ignored and never persists between releases, so the TUI
-      # binary must be rebuilt on every release regardless of whether
-      # brew-checker-tui.py's own source changed since the last tag — its
-      # baked-in core.VERSION must match this release. Don't skip this.
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Build TUI binary
-        run: |
-          python3 -m venv .venv
-          .venv/bin/pip install -r requirements-dev.txt
-          ./build-tui.sh
 
       - name: Compute checksums
         id: sha

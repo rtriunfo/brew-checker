@@ -196,7 +196,11 @@ levels and needs neither a real Homebrew install nor (mostly) `textual`:
 
 The detection algorithm has a single home: `reconcile()` in the engine, which both
 `main()` (CLI) and the TUI's `compute_state()` call; don't re-derive it elsewhere.
-There is no linter or CI configured. `dist/` is git-ignored — build the source and
+CI (`.github/workflows/test.yml`) runs the full suite — textual included — on
+Python 3.9 and 3.15 for every push/PR, plus `ruff check .` (config in
+`ruff.toml`; run locally with `.venv/bin/ruff check .`). `release.yml` calls
+that workflow first, then smoke-tests the built binaries on both Pythons
+before it commits the bump, tags or publishes. `dist/` is git-ignored — build the source and
 rebuild, never check in the binary.
 
 **Always rebuild `dist/brew-checker-tui` after changing the TUI.** The user tests
@@ -207,6 +211,17 @@ stays git-ignored — this is purely so the local artifact matches the source.
 
 ## Conventions / gotchas
 
+- **Python floor is 3.9** (`MIN_PYTHON` in the engine): stock macOS's
+  `python3` is the Command Line Tools' 3.9, and the shiv binary and CLI run on
+  whatever `python3` is on `PATH` outside Homebrew. No 3.10+ features — in
+  particular no runtime `X | None` (e.g. in a class base like
+  `ModalScreen[...]`; use `Optional[...]`). Annotations are fine because the
+  TUI has `from __future__ import annotations`. The floor is repeated in the
+  TUI's `_MIN_PYTHON`, `ruff.toml` and the test.yml matrix;
+  `PythonFloorTest` fails if they drift. The Homebrew formula pins its own
+  interpreter (`depends_on "python@3.15"` in the template, run via `libexec`
+  wrappers); bumping it means updating the test.yml matrix too (also
+  enforced by `PythonFloorTest`).
 - Keep `brew-checker.py` importable by path: `build-tui.sh` copies it to a
   staging dir under its hyphenated name (loaded by path) while copying the TUI to
   `brew_checker_tui.py` (an import-safe name) for shiv's entry point. Renaming

@@ -6,18 +6,27 @@ class BrewChecker < Formula
   license "MIT"
   version "{VERSION}"
 
+  # Run on a pinned interpreter rather than whatever `python3` is first on PATH
+  # (on stock macOS that's the Command Line Tools' 3.9). The release workflow
+  # smoke-tests the binaries on this same version, read from this line.
+  depends_on "python@3.15"
+
   resource "brew-checker-tui" do
     url "https://github.com/rtriunfo/brew-checker/releases/download/v{VERSION}/brew-checker-tui", using: :nounzip
     sha256 "{TUI_SHA}"
   end
 
   def install
-    bin.install "brew-checker.py" => "brew-checker"
-    chmod 0755, bin/"brew-checker"
+    libexec.install "brew-checker.py"
+    resource("brew-checker-tui").stage { libexec.install "brew-checker-tui" }
 
-    resource("brew-checker-tui").stage do
-      bin.install "brew-checker-tui"
-      chmod 0755, bin/"brew-checker-tui"
+    python = Formula["python@3.15"].opt_bin/"python3.15"
+    { "brew-checker" => "brew-checker.py", "brew-checker-tui" => "brew-checker-tui" }.each do |cmd, target|
+      (bin/cmd).write <<~SH
+        #!/bin/bash
+        exec "#{python}" "#{libexec}/#{target}" "$@"
+      SH
+      chmod 0755, bin/cmd
     end
   end
 
