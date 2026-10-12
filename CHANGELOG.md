@@ -6,6 +6,15 @@ the `VERSION` constant in `brew-checker.py`.
 
 ## [Unreleased]
 
+### CI
+
+- Bump `actions/checkout` v4 → v7 and `actions/setup-python` v5 → v7 (Node 24
+  runtime; clears the Node 20 deprecation warnings).
+- Dependabot (`.github/dependabot.yml`) opens a monthly grouped PR for action
+  updates.
+- `release.yml` runs in a `release` concurrency group so overlapping
+  dispatches queue instead of racing on the next tag.
+
 ## [0.2.1] - 2026-10-12
 
 Guard rails so a Python-version slip like the 0.2.0 fix can't ship again.
