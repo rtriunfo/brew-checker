@@ -28,7 +28,7 @@ if sys.version_info < MIN_PYTHON:
     sys.exit("brew-checker needs Python %d.%d or newer (this is %s)"
              % (MIN_PYTHON + (sys.version.split()[0],)))
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 # Which directories count as the "Applications" folders to scan. Overridable via
 # BREW_CHECKER_APP_DIRS (colon-separated) so the CLI can be exercised hermetic in
