@@ -196,12 +196,47 @@ levels and needs neither a real Homebrew install nor (mostly) `textual`:
 
 The detection algorithm has a single home: `reconcile()` in the engine, which both
 `main()` (CLI) and the TUI's `compute_state()` call; don't re-derive it elsewhere.
-CI (`.github/workflows/test.yml`) runs the full suite — textual included — on
-Python 3.9 and 3.15 for every push/PR, plus `ruff check .` (config in
-`ruff.toml`; run locally with `.venv/bin/ruff check .`). `release.yml` calls
-that workflow first, then smoke-tests the built binaries on both Pythons
-before it commits the bump, tags or publishes. `dist/` is git-ignored — build the source and
+Lint with `.venv/bin/ruff check .` (config in `ruff.toml`); CI runs it too — see
+**Release & CI** below. `dist/` is git-ignored — build the source and
 rebuild, never check in the binary.
+
+## Release & CI
+
+- **Releasing is a manual GitHub Actions dispatch**, never a local tag:
+  `gh -R rtriunfo/brew-checker workflow run release.yml -f bump=patch|minor|major`,
+  then `gh run watch <id> --exit-status`. Don't edit `VERSION` by hand — the
+  workflow computes the next version from the latest `v*` tag and rewrites the
+  `VERSION = "x.y.z"` line via regex (keep that exact format, space included).
+- **Order inside `release.yml`** (all gated, nothing published until the end):
+  `test` job (calls `test.yml`) → compute version → bump `VERSION` in the
+  checkout → build `dist/brew-checker-tui` → **smoke-test** `brew-checker.py`
+  and the TUI binary with `--version` on Python 3.9 *and* the formula's Python →
+  commit "Bump version to X" + push to `main` → tag → GitHub Release (assets:
+  `brew-checker.py`, `brew-checker-tui`) → render `homebrew/brew-checker.rb.tmpl`
+  (`scripts/render_formula.py`) and push it to the tap repo
+  `rtriunfo/homebrew-brew-checker` (`Formula/brew-checker.rb`, needs the
+  `TAP_REPO_TOKEN` secret). Users then get it with
+  `brew update && brew upgrade brew-checker`.
+- **After a release, `git pull --ff-only`** — the bot's bump commit lands on
+  `origin/main` only, so local `main` is one commit behind (and a later push
+  would otherwise need a rebase).
+- `release.yml` runs in a `release` concurrency group (queued, never cancelled)
+  so two dispatches can't race on the same next tag.
+- **CI** (`.github/workflows/test.yml`, on push/PR and `workflow_call`): full
+  suite with textual installed on Python **3.9** (the floor) and **3.15** (the
+  formula's) on `macos-latest`, plus a `ruff check .` job. The TUI tests must
+  actually run there (not skip) — importing the TUI module on 3.9 is what catches
+  3.10+ syntax.
+- **Actions are pinned to major tags** (`actions/checkout@v7`,
+  `actions/setup-python@v7`, Node 24). Dependabot (`.github/dependabot.yml`)
+  opens a monthly grouped PR for action updates. When bumping across majors, read
+  each major's release notes first (e.g. checkout v6 moved persisted git creds to
+  a separate file; the release's `git push` relies on them). As of 2026-10-12 the
+  release workflow had not yet run on v7 actions — watch the first one.
+- The formula (`homebrew/brew-checker.rb.tmpl`) `depends_on "python@3.15"` and
+  installs both files into `libexec` with `bin/` bash wrappers that `exec` that
+  interpreter. Change the pinned version in both places in the template and in
+  the `test.yml` matrix (`PythonFloorTest` enforces the matrix part).
 
 **Always rebuild `dist/brew-checker-tui` after changing the TUI.** The user tests
 against that bundled binary, so a source edit that isn't rebuilt won't show up
