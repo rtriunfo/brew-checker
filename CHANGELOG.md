@@ -6,6 +6,19 @@ the `VERSION` constant in `brew-checker.py`.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-12
+
+### Fixed
+
+- **TUI crashed on launch under Python 3.9.** The bundled `brew-checker-tui`
+  runs on whatever `python3` is first on `PATH` (shebang `/usr/bin/env python3`),
+  which on stock macOS is the Command Line Tools' Python 3.9. The TUI used PEP 604
+  `X | None` unions, which 3.9 can't evaluate at runtime — fatally in the
+  `BackupPickerScreen(ModalScreen[str | None])` class base, raising
+  `TypeError: unsupported operand type(s) for |` at import. The TUI now uses
+  `from __future__ import annotations` for its annotations and `Optional[str]` in
+  that runtime-evaluated base, so it starts on Python 3.9+.
+
 ### Architecture (engine + TUI)
 
 - **Single detection home.** The MISSING/UNTRACKED/UNINSPECTABLE reconciliation

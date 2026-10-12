@@ -14,6 +14,8 @@ brew command is shown and confirmed before it runs, and its output streams into
 the log pane on the right.
 """
 
+from __future__ import annotations
+
 import asyncio
 import datetime
 import importlib.util
@@ -22,6 +24,7 @@ import os
 import pathlib
 import subprocess
 import sys
+from typing import Optional
 
 from textual import work
 from textual.app import App, ComposeResult, SystemCommand
@@ -170,7 +173,7 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class BackupPickerScreen(ModalScreen[str | None]):
+class BackupPickerScreen(ModalScreen[Optional[str]]):
     """Modal list of saved backups; dismisses with the chosen file's path (or None).
 
     Supports multi-select deletion: press space to toggle selection on one or more
