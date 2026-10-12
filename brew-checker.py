@@ -20,7 +20,7 @@ import socket
 import subprocess
 import sys
 
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 
 # Which directories count as the "Applications" folders to scan. Overridable via
 # BREW_CHECKER_APP_DIRS (colon-separated) so the CLI can be exercised hermetic in
