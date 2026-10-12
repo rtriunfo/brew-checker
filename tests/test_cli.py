@@ -12,6 +12,7 @@ Run with:  python3 -m unittest discover -s tests -t .
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,8 @@ import unittest
 from . import fakebrew
 
 _ENGINE = pathlib.Path(__file__).resolve().parent.parent / "brew-checker.py"
+# The release workflow bumps VERSION on every release, so read it rather than pin it.
+_VERSION = re.search(r'^VERSION = "(.+)"', _ENGINE.read_text(), re.M).group(1)
 
 CASKS = fakebrew.CASKS
 FORMULAE = fakebrew.FORMULAE
@@ -64,7 +67,7 @@ class ReconcileInterfaceTest(CLIFixture):
     def test_version(self):
         p = self.run_cli("--version")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout.strip(), "brew-checker 0.1.0")
+        self.assertEqual(p.stdout.strip(), f"brew-checker {_VERSION}")
 
     def test_default_report_has_both_sections_and_missing_exits_1(self):
         p = self.run_cli()
